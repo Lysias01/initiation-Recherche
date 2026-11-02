@@ -9,7 +9,7 @@ En ligne : **https://lysias01.github.io/initiation-Recherche/**
 - **À revoir** : toute question ratée (quiz, exercices des cas pratiques, examens) est ajoutée automatiquement à la liste « À revoir » (badge sur Quiz, bandeau sur l'accueil). Une bonne réponse la retire de la liste.
 - **Cas pratiques** : 12 cas expliqués étape par étape, avec lecture guidée à voix haute, puis exercices « comme au devoir » (dont un générateur de séries statistiques).
 - **Examens** : le contrôle d'octobre 2025, deux sujets blancs et un examen éclair, chronométrés et notés sur 20.
-- **Écoute** : bouton haut-parleur sur les fiches, les étapes des cas pratiques, chaque question et le mémo du jour. Le passage lu et le mot prononcé sont surlignés, la phrase s'affiche en sous-titre dans la barre de lecture (pause, passage précédent/suivant, vitesse, choix de la voix). En mode cartes, l'écoute enchaîne terme → temps pour réciter → réponse → carte suivante. Dans le quiz, « Auto » lit chaque question et sa correction.
+- **Écoute** : bouton « Écouter » (le même bouton devient « Arrêter ») sur les fiches, les étapes des cas pratiques, chaque question et le mémo du jour, avec un réglage de vitesse − / + juste à côté. Le passage lu et le mot prononcé sont surlignés dans la page. En mode cartes, l'écoute enchaîne terme → 2 s pour réciter → réponse → carte suivante. Dans le quiz, « Auto » lit chaque question et sa correction. Si la voix en ligne est lente ou indisponible, une voix installée sur l'appareil prend le relais.
 - Fonctionne hors ligne une fois ouvert (installable sur téléphone), progression enregistrée dans le navigateur.
 
 ## Mettre en ligne sur GitHub Pages

@@ -104,10 +104,11 @@
     meta.push(`<span class="tag">${TYPE[q.t] || q.t}</span>`);
     if (q.src) meta.push(srcTag(q.src));
     if (opts.pts != null) meta.push(`<span class="pts">${fmt(opts.pts)} pt${opts.pts > 1 ? "s" : ""}</span>`);
-    meta.push(`<button type="button" class="listen-ic" aria-label="Écouter la question">${IC.speaker}</button>`);
+    const lid = nid("q");
+    meta.push(`<button type="button" class="listen-ic" data-listen="${lid}" data-label="Écouter la question" aria-label="Écouter la question"><span class="ico">${IC.speaker}</span></button>`);
     el.innerHTML = `<div class="qmeta">${meta.join("")}</div>${opts.intro ? `<div class="qintro">${esc(opts.intro)}</div>` : ""}<p class="qtext">${esc(q.q)}</p><div class="qbody"></div><div class="qfb"></div><div class="qact"></div>`;
     const body = $(".qbody", el), fbox = $(".qfb", el), act = $(".qact", el);
-    $(".listen-ic", el).addEventListener("click", () => Reader.play(blocks(el), { owner: "question" }));
+    $(".listen-ic", el).addEventListener("click", () => toggleListen(lid, () => Reader.play(blocks(el), { owner: lid })));
     const letters = "ABCDEFGH";
     let data = {};
 
@@ -314,11 +315,7 @@
     prog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
     moon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
     speaker: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
-    play: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
-    pause: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6" y="5" width="4.2" height="14" rx="1.2"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.2"/></svg>',
-    prev: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M6 5h2v14H6zM20 6.2v11.6a1 1 0 0 1-1.53.85L9.5 13a1.2 1.2 0 0 1 0-2l8.97-5.65A1 1 0 0 1 20 6.2z"/></svg>',
-    next: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M16 5h2v14h-2zM4 6.2v11.6a1 1 0 0 0 1.53.85L14.5 13a1.2 1.2 0 0 0 0-2L5.53 5.35A1 1 0 0 0 4 6.2z"/></svg>',
-    close: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>'
+    stop: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>'
   };
   const NAV = [["accueil", "Accueil", "home"], ["fiches", "Fiches", "fiches"], ["quiz", "Quiz", "quiz"], ["cas", "Cas pratiques", "cas"], ["examens", "Examens", "exam"], ["progres", "Progrès", "prog"]];
 
@@ -327,7 +324,7 @@
   // le mot prononcé aussi (quand le navigateur le permet), et la barre du bas affiche la phrase en sous-titre.
   const SAY = [[/→/g, ", puis "], [/←/g, " "], [/÷/g, " divisé par "], [/≈/g, " environ "], [/²/g, " au carré"], [/√/g, "racine de "], [/×/g, " fois "], [/±/g, " plus ou moins "], [/≠/g, " différent de "], [/≤/g, " inférieur ou égal à "], [/≥/g, " supérieur ou égal à "], [/[★✔✗✎◐○↻]/gu, " "]];
   const sayable = (t) => SAY.reduce((a, [re, by]) => a.replace(re, by), t);
-  const SKIP = ".tag, .badge, .no, .qmeta, .qact, .step-dots, .flash-hint, .listen, .listen-ic, button:not(.choice):not(.ochip), select, textarea, input, svg, script, style, [hidden], [aria-hidden='true']";
+  const SKIP = ".tag, .badge, .no, .qmeta, .qact, .step-dots, .flash-hint, .listen, .listen-ic, .speed, .listen-wrap, button:not(.choice):not(.ochip), select, textarea, input, svg, script, style, [hidden], [aria-hidden='true']";
   const SEG = "h1, h2, h3, p, li, blockquote, tr, .choice, .ochip, .memo, .warnbox, .tip, .qintro, .calc, .fb-head, .order-label";
   const WORD = /[\p{L}\p{N}’'-]/u;
   function blocks(root) {
@@ -372,47 +369,30 @@
     const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
     const HL = window.CSS && CSS.highlights && typeof Highlight === "function" ? new Highlight() : null;
     if (HL) CSS.highlights.set("reading-word", HL);
-    const RATES = [0.8, 1, 1.2, 1.4, 1.7];
+    const RATES = [0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
     const CPS = 14.5; // caractères par seconde à vitesse 1, pour suivre le texte quand la voix ne donne pas sa position
-    const SOFT_PAUSE = !/Android/i.test(navigator.userAgent); // pause/reprise natives (cassées sur Android : on relance la phrase)
-    let segs = [], G = "", groups = [], opts = {}, token = 0, playing = false, soft = false, started = -1, avoid = new Set(), silent = false;
-    let pos = 0, curSeg = -1, tick = null, curU = null, pausedAt = 0, queuedTo = 0, chainedAt = -1;
-    let bar, sub, posEl, tog, rateBtn, voiceSel;
-    const rate = () => (RATES.includes(S.rate) ? S.rate : 1);
-    const fmtRate = () => String(rate()).replace(".", ",") + "×";
-    const voices = () => (synth ? synth.getVoices().filter((v) => /^fr/i.test(v.lang)) : []);
+    let segs = [], G = "", groups = [], opts = {}, token = 0, playing = false, started = -1, retries = 0;
+    let pos = 0, curSeg = -1, tick = null, queuedTo = 0, chainedAt = -1;
+    // Voix en ligne trop lente ou en panne (connexion faible) : on passe sur une voix installée sur l'appareil.
+    let preferLocal = false; const avoid = new Set();
+    const rate = () => RATES.reduce((a, b) => (Math.abs(b - (S.rate || 1)) < Math.abs(a - (S.rate || 1)) ? b : a), 1);
+    const rateLabel = () => String(rate()).replace(".", ",") + "×";
     function voice() {
-      const vs = voices().filter((v) => !avoid.has(v.name)); if (!vs.length) return null;
-      const saved = vs.find((v) => v.name === S.voice); if (saved) return saved;
+      let vs = synth ? synth.getVoices().filter((v) => /^fr/i.test(v.lang) && !avoid.has(v.name)) : [];
+      if (preferLocal) { const loc = vs.filter((v) => v.localService); if (loc.length) vs = loc; }
+      if (!vs.length) return null;
       const sc = (v) => (/natural|online|neural/i.test(v.name) ? 4 : 0) + (/google/i.test(v.name) ? 2 : 0) + (/fr-FR/i.test(v.lang) ? 1 : 0);
       return vs.slice().sort((a, b) => sc(b) - sc(a))[0];
     }
     // Les voix Google de Chrome se coupent au-delà d'environ 15 s : phrases plus courtes pour elles.
     const maxLen = () => { const v = voice(); return v && /google/i.test(v.name) ? 220 : 900; };
-    function fillVoices() {
-      const vs = voices(); const v = voice();
-      voiceSel.innerHTML = vs.map((x) => `<option ${v && x.name === v.name ? "selected" : ""}>${esc(x.name)}</option>`).join("");
-      voiceSel.hidden = vs.length < 2;
-    }
     function init() {
-      document.body.insertAdjacentHTML("beforeend", `<div class="player" id="player" role="region" aria-label="Lecteur audio" hidden>
-        <p class="player-sub" id="player-sub"></p>
-        <div class="player-ctl">
-          <button type="button" class="pbtn" data-p="prev" aria-label="Passage précédent">${IC.prev}</button>
-          <button type="button" class="pbtn main" data-p="toggle" aria-label="Pause">${IC.pause}</button>
-          <button type="button" class="pbtn" data-p="next" aria-label="Passage suivant">${IC.next}</button>
-          <span class="player-pos" id="player-pos"></span>
-          <select class="player-voice" id="player-voice" aria-label="Voix" hidden></select>
-          <button type="button" class="pbtn rate" data-p="rate" aria-label="Vitesse de lecture"></button>
-          <button type="button" class="pbtn" data-p="stop" aria-label="Arrêter la lecture">${IC.close}</button>
-        </div></div>`);
-      bar = $("#player"); sub = $("#player-sub"); posEl = $("#player-pos"); tog = $("[data-p=toggle]", bar); rateBtn = $("[data-p=rate]", bar); voiceSel = $("#player-voice");
-      rateBtn.textContent = fmtRate();
-      bar.addEventListener("click", (e) => { const b = e.target.closest("[data-p]"); if (b) ({ prev, next, toggle, stop, rate: cycleRate })[b.dataset.p](); });
-      voiceSel.addEventListener("change", () => { S.voice = voiceSel.value; save(); restartHere(); });
-      if (synth) { fillVoices(); if (synth.addEventListener) synth.addEventListener("voiceschanged", fillVoices); else synth.onvoiceschanged = fillVoices; }
+      delete S.voice; // l'ancien choix manuel de voix pouvait bloquer le son
+      if (synth && synth.addEventListener) synth.addEventListener("voiceschanged", () => {});
       document.addEventListener("keydown", (e) => { if (e.key === "Escape" && segs.length) stop(); });
+      document.addEventListener("click", (e) => { const b = e.target.closest("[data-speed]"); if (b) setRate(+b.dataset.speed); });
     }
+    const notify = () => document.dispatchEvent(new CustomEvent("reader"));
 
     /* --- texte et positions --- */
     function addItems(items, enter) {
@@ -447,15 +427,10 @@
     }
     const stopAt = (f) => { const s = segs.find((x) => x.barrier && !x.passed && x.start >= f); return s ? s.start : G.length; };
 
-    /* --- affichage --- */
+    /* --- surlignage dans la page --- */
     const clearMarks = () => { if (HL) HL.clear(); $$(".reading").forEach((e) => e.classList.remove("reading")); };
-    const show = (on) => { bar.hidden = !on; document.body.classList.toggle("has-player", on); };
-    function ui() {
-      tog.innerHTML = playing ? IC.pause : IC.play; tog.setAttribute("aria-label", playing ? "Pause" : "Reprendre la lecture");
-      posEl.textContent = segs.length ? `${Math.max(1, curSeg + 1)} / ${segs.length}` : "";
-    }
     function reveal(el) {
-      const r = el.getBoundingClientRect(); const bottom = window.innerHeight - (bar.offsetHeight || 0) - (window.matchMedia("(max-width: 860px)").matches ? 80 : 16);
+      const r = el.getBoundingClientRect(); const bottom = window.innerHeight - (window.matchMedia("(max-width: 860px)").matches ? 90 : 24);
       if (r.top < 76 || r.bottom > bottom) window.scrollTo({ top: window.scrollY + r.top - Math.max(84, (bottom - Math.min(r.height, bottom - 84)) / 2), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     }
     function setPos(g) {
@@ -465,40 +440,40 @@
         groups.forEach((gr) => { if (!gr.done && i >= gr.from) { gr.done = true; gr.enter(); } });
         $$(".reading").forEach((e) => e.classList.remove("reading"));
         if (document.body.contains(s.el)) { s.el.classList.add("reading"); reveal(s.el); }
-        ui();
       }
       if (HL) { HL.clear(); const r = rangeAt(s, g); if (r) HL.add(r); }
-      // Sous-titre : la phrase en cours, mot prononcé en évidence.
-      let a = Math.min(g, s.end); while (a > s.start && !isEnd(a)) a--;
-      let b = Math.max(g, a); while (b < s.end && !isEnd(b)) b++;
-      if (b - a > 260) { a = Math.max(a, g - 120); b = Math.min(b, g + 140); }
-      let w0 = Math.max(a, Math.min(g, b)); while (w0 < b && !WORD.test(G[w0])) w0++;
-      let w1 = w0; while (w0 > a && WORD.test(G[w0 - 1])) w0--; while (w1 < b && WORD.test(G[w1])) w1++;
-      sub.innerHTML = `${esc(G.slice(a, w0))}<mark>${esc(G.slice(w0, w1))}</mark>${esc(G.slice(w1, b))}`;
     }
 
     /* --- voix --- */
-    function halt() { token++; clearInterval(tick); tick = null; soft = false; try { if (synth) synth.cancel(); } catch (e) {} }
-    function follow(u, my, keep) {
-      clearInterval(tick); curU = u; if (!keep) { u.t0 = Date.now(); u.got = false; }
-      tick = setInterval(() => { if (my !== token || u.got || !playing) return; setPos(u.start + Math.min(u.text.length - 1, Math.floor(((Date.now() - u.t0) / 1000) * CPS * rate()))); }, 120);
+    function halt() { token++; clearInterval(tick); tick = null; try { if (synth) { synth.cancel(); if (synth.paused) synth.resume(); } } catch (e) {} }
+    function follow(u, my) {
+      clearInterval(tick); u.t0 = Date.now(); u.got = false;
+      tick = setInterval(() => { if (my !== token || u.got) return; setPos(u.start + Math.min(u.text.length - 1, Math.floor(((Date.now() - u.t0) / 1000) * CPS * rate()))); }, 120);
     }
+    function fallback(v) { if (v && !v.localService) { avoid.add(v.name); preferLocal = true; return true; } return false; }
     // Met en file la lecture de f jusqu'à la prochaine pause prévue (ou la fin), sans interrompre ce qui est déjà en file.
     function enqueue(f, my) {
       const to = stopAt(f); const us = units(f, to); queuedTo = to;
       if (!us.length) { onBlockEnd(my, to); return; }
-      let t = 0;
+      const v = voice(); const asked = Date.now();
       us.forEach((u, k) => {
         const last = k === us.length - 1;
-        const onStart = () => { if (my !== token) return; started = token; follow(u, my); setPos(u.start); if (last) chainMore(my); };
+        const onStart = () => {
+          if (my !== token) return;
+          if (started !== my && Date.now() - asked > 2500) fallback(v); // trop lent à démarrer : voix locale la prochaine fois
+          started = my; follow(u, my); setPos(u.start); if (last) chainMore(my);
+        };
         const ended = () => { if (my !== token || !last || queuedTo !== to) return; clearInterval(tick); onBlockEnd(my, to); };
-        const dur = Math.max(700, (u.text.length / (CPS * rate())) * 1000);
-        if (!synth || silent) { setTimeout(onStart, t); setTimeout(ended, t + dur); t += dur; return; }
-        const ut = new SpeechSynthesisUtterance(u.text); ut.lang = "fr-FR"; ut.rate = rate(); const v = voice(); if (v) ut.voice = v;
+        if (!synth) { const dur = Math.max(700, (u.text.length / (CPS * rate())) * 1000); setTimeout(onStart, 0); setTimeout(ended, dur); return; }
+        const ut = new SpeechSynthesisUtterance(u.text); ut.lang = "fr-FR"; ut.rate = rate(); if (v) ut.voice = v;
         ut.onstart = onStart;
         ut.onboundary = (e) => { if (my !== token || (e.name && e.name !== "word")) return; u.got = true; setPos(u.start + e.charIndex); };
         ut.onend = ended;
-        ut.onerror = (e) => { if (e.error !== "interrupted" && e.error !== "canceled") ended(); };
+        ut.onerror = (e) => {
+          if (my !== token || e.error === "interrupted" || e.error === "canceled") return;
+          if (retries < 2 && fallback(v)) { retries++; speakFrom(sentenceStart(pos)); return; } // voix en ligne en panne : on reprend avec une voix locale
+          ended();
+        };
         synth.speak(ut);
       });
     }
@@ -512,20 +487,13 @@
     function onBlockEnd(my, to) {
       if (to >= G.length) { finish(); return; }
       const s = segs[segAt(to)]; // passage avec pause prévue (ex. temps pour réciter avant de retourner la carte)
-      sub.textContent = s.it.pauseText || "…";
       setTimeout(() => { if (my !== token || !playing) return; s.passed = true; if (s.it.before) s.it.before(); enqueue(s.start, my); }, s.it.pause || 0);
     }
     function speakFrom(f) {
-      halt(); playing = true; ui(); const my = token;
-      if (synth && synth.paused) synth.resume();
+      halt(); playing = true; const my = token;
       setPos(f); enqueue(f, my);
-      // Si la voix ne démarre pas (voix en ligne sans connexion, voix indisponible), on bascule sur une autre voix française.
-      setTimeout(() => {
-        if (my !== token || !playing || started === my || !synth) return;
-        const v = voice(); if (v) avoid.add(v.name); if (!voice() || avoid.size >= 2) silent = true;
-        if (silent) sub.textContent = "Aucune voix disponible : lecture silencieuse avec surlignage.";
-        speakFrom(f);
-      }, 3500);
+      // Si la voix ne démarre pas du tout, on réessaie avec une voix installée sur l'appareil (jamais de lecture muette).
+      setTimeout(() => { if (my === token && playing && started !== my && retries < 2 && fallback(voice())) { retries++; speakFrom(f); } }, 6000);
     }
 
     /* --- commandes --- */
@@ -533,47 +501,36 @@
       o = o || {};
       if (segs.length && opts.onStop && opts.owner !== o.owner) opts.onStop();
       halt(); clearMarks();
-      segs = []; G = ""; groups = []; opts = o; curSeg = -1; chainedAt = -1;
+      segs = []; G = ""; groups = []; opts = o; curSeg = -1; chainedAt = -1; retries = 0;
       addItems(items);
-      if (!segs.length) { playing = false; show(false); return; }
-      show(true);
+      if (!segs.length) { playing = false; notify(); return; }
       const want = items[o.start || 0]; const si = Math.max(0, segs.findIndex((s) => s.el === (want && (want.el || want))));
-      speakFrom(segs[si].start);
+      speakFrom(segs[si].start); notify();
     }
-    function toggle() {
-      if (!segs.length) return;
-      if (playing) {
-        playing = false; pausedAt = Date.now();
-        if (SOFT_PAUSE && synth && synth.speaking && !synth.paused) { synth.pause(); clearInterval(tick); soft = true; } else halt();
-        ui(); return;
-      }
-      if (soft && synth) {
-        playing = true; ui(); soft = false;
-        if (curU) { curU.t0 += Date.now() - pausedAt; follow(curU, token, true); }
-        synth.resume();
-        const my = token; // filet de sécurité : si la voix ne repart pas, on relance la phrase
-        setTimeout(() => { if (my === token && playing && !synth.speaking) speakFrom(sentenceStart(pos)); }, 700);
-        return;
-      }
-      speakFrom(sentenceStart(pos));
+    function finish() { const f = opts.onEnd; halt(); clearMarks(); playing = false; segs = []; G = ""; opts = {}; notify(); if (f) f(); }
+    function stop() { const f = opts.onStop; halt(); clearMarks(); playing = false; segs = []; G = ""; opts = {}; notify(); if (f) f(); }
+    function setRate(dir) {
+      const i = RATES.indexOf(rate()); S.rate = RATES[Math.max(0, Math.min(RATES.length - 1, i + dir))]; save();
+      $$(".speed-val").forEach((e) => (e.textContent = rateLabel()));
+      if (playing && segs.length) speakFrom(sentenceStart(pos));
     }
-    function jump(i) {
-      if (!segs.length) return;
-      if (i >= segs.length) { finish(); return; }
-      i = Math.max(0, i); segs.forEach((s, k) => { if (k >= i) s.passed = false; });
-      if (segs[i].barrier) segs[i].passed = true;
-      if (segs[i].it.before) segs[i].it.before();
-      speakFrom(segs[i].start);
-    }
-    const next = () => jump(curSeg + 1);
-    const prev = () => jump(pos - segs[curSeg].start > 25 ? curSeg : curSeg - 1);
-    const restartHere = () => { if (playing && segs.length) speakFrom(sentenceStart(pos)); };
-    function finish() { const f = opts.onEnd; halt(); clearMarks(); playing = false; segs = []; G = ""; opts = {}; show(false); if (f) f(); }
-    function stop() { const f = opts.onStop; halt(); clearMarks(); playing = false; segs = []; G = ""; opts = {}; if (bar) show(false); if (f) f(); }
-    function cycleRate() { S.rate = RATES[(RATES.indexOf(rate()) + 1) % RATES.length]; save(); rateBtn.textContent = fmtRate(); restartHere(); }
-    return { init, play, stop };
+    return { init, play, stop, owner: () => (playing ? opts.owner : null), rateLabel };
   })();
-  const listenBtn = (id, label) => `<button type="button" class="btn sm ghost listen" id="${id}">${IC.speaker}<span>${label}</span></button>`;
+  // Bouton « Écouter » (devient « Arrêter » pendant la lecture) et réglage de vitesse juste à côté.
+  const speedCtl = () => `<span class="speed" role="group" aria-label="Vitesse de lecture"><button type="button" data-speed="-1" aria-label="Ralentir">−</button><span class="speed-val">${Reader.rateLabel()}</span><button type="button" data-speed="1" aria-label="Accélérer">+</button></span>`;
+  const listenBtn = (id, owner, label) => `<span class="listen-wrap"><button type="button" class="btn sm ghost listen" id="${id}" data-listen="${owner}" data-label="${label}" aria-pressed="false"><span class="ico">${IC.speaker}</span><span class="lab">${label}</span></button>${speedCtl()}</span>`;
+  function syncListen() {
+    const on = Reader.owner();
+    $$("[data-listen]").forEach((b) => {
+      const me = on === b.dataset.listen; b.setAttribute("aria-pressed", me);
+      const ico = $(".ico", b); if (ico) ico.innerHTML = me ? IC.stop : IC.speaker;
+      const lab = $(".lab", b); if (lab) lab.textContent = me ? "Arrêter" : b.dataset.label;
+      b.setAttribute("aria-label", me ? "Arrêter la lecture" : b.dataset.label || "Écouter");
+    });
+  }
+  document.addEventListener("reader", syncListen);
+  // Lance la lecture, ou l'arrête si ce même bouton est déjà en train de lire.
+  function toggleListen(owner, start) { if (Reader.owner() === owner) Reader.stop(); else start(); }
 
   /* ─────────── Rendu commun ─────────── */
   function render(html, wide) { Reader.stop(); clearTimer(); view().innerHTML = `<div class="wrap ${wide ? "wide" : ""} fade-in">${html}</div>`; window.scrollTo(0, 0); }
@@ -599,7 +556,7 @@
           <div class="counts"><span><b>${D.fiches.length}</b> fiches</span><span><b>${D.questions.length}</b> questions</span><span><b>${D.cas.length}</b> cas pratiques</span><span><b>${D.examens.length}</b> sujets</span></div>
         </div>
         <aside class="daily" aria-label="Mémo du jour">
-          <div class="row" style="justify-content:space-between"><span class="eyebrow">Mémo du jour · ${chap(f.ch).code}</span><button type="button" class="listen-ic" id="daily-listen" aria-label="Écouter le mémo du jour">${IC.speaker}</button></div>
+          <div class="row" style="justify-content:space-between"><span class="eyebrow">Mémo du jour · ${chap(f.ch).code}</span><button type="button" class="listen-ic" id="daily-listen" data-listen="daily" data-label="Écouter le mémo du jour" aria-label="Écouter le mémo du jour"><span class="ico">${IC.speaker}</span></button></div>
           <h3>${esc(f.term)}</h3>
           <p class="def">${esc(f.def)}</p>
           <p class="memo">${esc(f.memo)}</p>
@@ -625,7 +582,7 @@
         <p class="small">Le cheminement du chapitre 3. Le cas pratique « Le parcours complet » le déroule sur l'exercice 9 du TD.</p>
         <a class="btn sm ghost" href="#cas-parcours" style="align-self:flex-start">Voir le cas pratique</a>
       </section>`);
-    $("#daily-listen").addEventListener("click", () => Reader.play(blocks($(".daily")), { owner: "daily" }));
+    $("#daily-listen").addEventListener("click", () => toggleListen("daily", () => Reader.play(blocks($(".daily")), { owner: "daily" })));
     $$("[data-go]", view()).forEach((b) => b.addEventListener("click", () => {
       quizCfg = Object.assign(defaultCfg(), b.dataset.go === "smart" ? { mode: "smart", n: 15 } : b.dataset.go === "review" ? { mode: "review", n: 0 } : { mode: "c25", n: 0 });
       startQuiz(); location.hash = "quiz";
@@ -642,17 +599,17 @@
       </div>
       <div class="toolbar">
         <input class="search" id="fiche-search" type="search" placeholder="Chercher un mot (ex. hypothèse, Zotero…)" value="${esc(fState.q)}">
-        ${listenBtn("fiche-listen", "Écouter")}
+        ${listenBtn("fiche-listen", "fiches", "Écouter")}
         <div class="seg" role="group" aria-label="Affichage"><button type="button" data-m="list" aria-pressed="${fState.mode === "list"}">Liste</button><button type="button" data-m="cards" aria-pressed="${fState.mode === "cards"}">Cartes</button></div>
       </div>
       <div id="fiche-out"></div>`);
     $$("[data-ch]", view()).forEach((b) => b.addEventListener("click", () => { fState.ch = b.dataset.ch; fState.i = 0; fState.deck = null; $$("[data-ch]", view()).forEach((x) => x.setAttribute("aria-pressed", x === b)); drawFiches(); }));
     $$("[data-m]", view()).forEach((b) => b.addEventListener("click", () => { fState.mode = b.dataset.m; fState.i = 0; fState.deck = null; $$("[data-m]", view()).forEach((x) => x.setAttribute("aria-pressed", x === b)); drawFiches(); }));
-    $("#fiche-listen").addEventListener("click", () => {
+    $("#fiche-listen").addEventListener("click", () => toggleListen("fiches", () => {
       if (fState.mode === "cards") { fState.audio = true; cardAudio(); return; }
       const segs = blocks($("#fiche-out")); const first = segs.findIndex((x) => x.getBoundingClientRect().bottom > 90);
       Reader.play(segs, { owner: "fiches", start: Math.max(0, first) });
-    });
+    }));
     $("#fiche-search").addEventListener("input", (e) => { fState.q = e.target.value; fState.i = 0; fState.deck = null; drawFiches(); });
     drawFiches();
   }
@@ -669,8 +626,8 @@
     const card = $("#fiche-out .flash"); if (!card) { fState.audio = false; return; }
     const flipTo = () => { if (!fState.flipped) { fState.flipped = true; card.classList.add("flipped"); } };
     const back = blocks($(".flash-face.back", card)).filter((el) => el.tagName !== "H3"); // le terme vient d'être lu au recto
-    Reader.play([$(".flash-face.front h2", card), ...back.map((el, j) => (j ? el : { el, pause: 2000, pauseText: "À toi : récite la définition…", before: flipTo }))], {
-      owner: "cartes",
+    Reader.play([$(".flash-face.front h2", card), ...back.map((el, j) => (j ? el : { el, pause: 2000, before: flipTo }))], {
+      owner: "fiches",
       onStop: () => { fState.audio = false; },
       onEnd: () => { if (!fState.deck || fState.i >= fState.deck.length - 1) { fState.audio = false; return; } fState.i++; fState.flipped = false; drawFiches(); }
     });
@@ -762,7 +719,7 @@
   }
   function drawSession() {
     const s = session; const q = s.list[s.i];
-    render(`<div class="session-head"><button type="button" class="btn sm quiet" id="quit">✕ Quitter</button><button type="button" class="btn sm ${S.autoRead ? "" : "quiet"}" id="auto" aria-pressed="${!!S.autoRead}" title="Lire chaque question et sa correction à voix haute">${IC.speaker}<span>Auto</span></button><div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length} · ✔ ${s.res.filter((r) => r.ok).length}</span></div><div id="qslot"></div>`);
+    render(`<div class="session-head"><button type="button" class="btn sm quiet" id="quit">✕ Quitter</button><button type="button" class="btn sm ${S.autoRead ? "" : "quiet"}" id="auto" aria-pressed="${!!S.autoRead}" title="Lire chaque question et sa correction à voix haute">${IC.speaker}<span>Auto</span></button>${speedCtl()}<div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length} · ✔ ${s.res.filter((r) => r.ok).length}</span></div><div id="qslot"></div>`);
     const rec = recorder(q.id);
     const card = QCard(q, {
       mode: "practice", num: s.i + 1, total: s.list.length,
@@ -804,7 +761,7 @@
       <a href="#cas" class="small">← Tous les cas pratiques</a>
       <header class="page-head"><span class="eyebrow">${chap(k.ch).code} · Cas pratique</span><h1>${esc(k.title)}</h1><p>${esc(k.sub)}</p><div class="row">${srcTag(k.src)}<span class="tag">${k.steps.length} étapes</span><span class="tag">≈ ${k.min} min</span></div></header>
       <section class="stack" aria-label="Explication pas à pas">
-        <div class="row" style="justify-content:space-between"><div class="step-dots" id="dots"></div><button type="button" class="btn sm ghost listen" id="guide"></button></div>
+        <div class="row" style="justify-content:space-between"><div class="step-dots" id="dots"></div>${listenBtn("guide", "cas", "Écouter les étapes")}</div>
         <div id="step"></div>
         <div class="step-nav"><button type="button" class="btn quiet" id="prev">← Étape précédente</button><button type="button" class="btn" id="next"></button></div>
       </section>
@@ -822,7 +779,7 @@
       $("#next").textContent = cur < k.steps.length - 1 ? "Étape suivante →" : "Passer à l'exercice ↓";
       drawGuide();
     };
-    const drawGuide = () => { $("#guide").innerHTML = guided ? `<span class="guided"><span class="pulse"></span>Arrêter l'écoute</span>` : `${IC.speaker}<span>Écouter les étapes</span>`; };
+    const drawGuide = syncListen;
     const go = (i) => { cur = Math.max(0, Math.min(k.steps.length - 1, i)); seen.add(cur); drawStep(); if (guided) narrate(); };
     // L'étape suivante est préparée pendant la fin de la lecture et s'affiche quand la voix l'attaque : aucun blanc.
     let ahead = 0;
