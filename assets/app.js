@@ -355,26 +355,10 @@
     }
     return { text, pieces };
   }
-  function chunksOf(text) {
-    const out = []; const re = /[^.!?;:\n]+[.!?;:\n]*\s*/g; let m, cur = null;
-    while ((m = re.exec(text))) {
-      if (cur && cur.text.length + m[0].length <= 200) cur.text += m[0];
-      else { cur = { start: m.index, text: m[0] }; out.push(cur); }
-    }
-    // Les phrases très longues sont recoupées aux virgules (certaines voix s'arrêtent au-delà de ~15 s).
-    const fin = [];
-    out.forEach((c) => {
-      while (c.text.length > 240) {
-        let cut = c.text.lastIndexOf(", ", 200); if (cut < 60) cut = c.text.lastIndexOf(" ", 200); if (cut < 60) break;
-        fin.push({ start: c.start, text: c.text.slice(0, cut + 1) }); c = { start: c.start + cut + 1, text: c.text.slice(cut + 1) };
-      }
-      fin.push(c);
-    });
-    return fin.filter((c) => c.text.trim());
-  }
-  function rangeAt(info, gi) {
-    const p = info.pieces.find((x) => gi >= x.start && gi < x.start + x.len); if (!p) return null;
-    const t = p.raw; let o = p.len === t.length ? gi - p.start : Math.round(((gi - p.start) / p.len) * t.length);
+  // Le mot prononcé dans un passage : on retrouve le nœud de texte d'origine (position g dans le texte complet).
+  function rangeAt(seg, g) {
+    const p = seg.pieces.find((x) => g >= x.start && g < x.start + x.len); if (!p) return null;
+    const t = p.raw; let o = p.len === t.length ? g - p.start : Math.round(((g - p.start) / p.len) * t.length);
     o = Math.min(Math.max(0, o), t.length - 1);
     while (o < t.length && !WORD.test(t[o])) o++;
     if (o >= t.length) return null;
@@ -382,23 +366,29 @@
     const r = document.createRange(); r.setStart(p.node, a); r.setEnd(p.node, b); return r;
   }
 
+  // Tout le contenu à lire forme un seul texte G. Il est confié d'avance à la voix en longues phrases mises en file,
+  // pour qu'elle enchaîne sans blanc ; le surlignage suit la voix (position donnée par la voix, sinon estimée).
   const Reader = (() => {
     const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
     const HL = window.CSS && CSS.highlights && typeof Highlight === "function" ? new Highlight() : null;
     if (HL) CSS.highlights.set("reading-word", HL);
     const RATES = [0.8, 1, 1.2, 1.4, 1.7];
-    const CPS = 14.5; // caractères lus par seconde à vitesse 1, pour suivre le texte quand la voix ne donne pas sa position
-    let list = [], opts = {}, idx = 0, chunk = 0, info = null, cur = null, token = 0, playing = false, tick = null, gotBoundary = false;
-    let bar, sub, pos, tog, rateBtn, voiceSel;
+    const CPS = 14.5; // caractères par seconde à vitesse 1, pour suivre le texte quand la voix ne donne pas sa position
+    const SOFT_PAUSE = !/Android/i.test(navigator.userAgent); // pause/reprise natives (cassées sur Android : on relance la phrase)
+    let segs = [], G = "", groups = [], opts = {}, token = 0, playing = false, soft = false, started = -1, avoid = new Set(), silent = false;
+    let pos = 0, curSeg = -1, tick = null, curU = null, pausedAt = 0, queuedTo = 0, chainedAt = -1;
+    let bar, sub, posEl, tog, rateBtn, voiceSel;
     const rate = () => (RATES.includes(S.rate) ? S.rate : 1);
     const fmtRate = () => String(rate()).replace(".", ",") + "×";
     const voices = () => (synth ? synth.getVoices().filter((v) => /^fr/i.test(v.lang)) : []);
     function voice() {
-      const vs = voices(); if (!vs.length) return null;
+      const vs = voices().filter((v) => !avoid.has(v.name)); if (!vs.length) return null;
       const saved = vs.find((v) => v.name === S.voice); if (saved) return saved;
       const sc = (v) => (/natural|online|neural/i.test(v.name) ? 4 : 0) + (/google/i.test(v.name) ? 2 : 0) + (/fr-FR/i.test(v.lang) ? 1 : 0);
       return vs.slice().sort((a, b) => sc(b) - sc(a))[0];
     }
+    // Les voix Google de Chrome se coupent au-delà d'environ 15 s : phrases plus courtes pour elles.
+    const maxLen = () => { const v = voice(); return v && /google/i.test(v.name) ? 220 : 900; };
     function fillVoices() {
       const vs = voices(); const v = voice();
       voiceSel.innerHTML = vs.map((x) => `<option ${v && x.name === v.name ? "selected" : ""}>${esc(x.name)}</option>`).join("");
@@ -416,85 +406,172 @@
           <button type="button" class="pbtn rate" data-p="rate" aria-label="Vitesse de lecture"></button>
           <button type="button" class="pbtn" data-p="stop" aria-label="Arrêter la lecture">${IC.close}</button>
         </div></div>`);
-      bar = $("#player"); sub = $("#player-sub"); pos = $("#player-pos"); tog = $("[data-p=toggle]", bar); rateBtn = $("[data-p=rate]", bar); voiceSel = $("#player-voice");
+      bar = $("#player"); sub = $("#player-sub"); posEl = $("#player-pos"); tog = $("[data-p=toggle]", bar); rateBtn = $("[data-p=rate]", bar); voiceSel = $("#player-voice");
       rateBtn.textContent = fmtRate();
       bar.addEventListener("click", (e) => { const b = e.target.closest("[data-p]"); if (b) ({ prev, next, toggle, stop, rate: cycleRate })[b.dataset.p](); });
-      voiceSel.addEventListener("change", () => { S.voice = voiceSel.value; save(); if (playing) speakChunk(); });
+      voiceSel.addEventListener("change", () => { S.voice = voiceSel.value; save(); restartHere(); });
       if (synth) { fillVoices(); if (synth.addEventListener) synth.addEventListener("voiceschanged", fillVoices); else synth.onvoiceschanged = fillVoices; }
-      document.addEventListener("keydown", (e) => { if (e.key === "Escape" && list.length) stop(); });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape" && segs.length) stop(); });
     }
+
+    /* --- texte et positions --- */
+    function addItems(items, enter) {
+      const from = segs.length;
+      items.filter(Boolean).forEach((it) => {
+        const el = it.el || it; const cfg = it.el ? it : {}; const t = textOf(el); if (!t.text.trim()) return;
+        // Entre deux passages : un point si la phrase n'est pas terminée, pour une respiration naturelle.
+        if (G) G += /[.!?:;…]\s*$/.test(G) ? (/\s$/.test(G) ? "" : " ") : ". ";
+        const start = G.length; t.pieces.forEach((p) => (p.start += start)); G += t.text;
+        segs.push({ el, start, end: G.length, pieces: t.pieces, it: cfg, barrier: !!(cfg.pause || cfg.before), passed: false });
+      });
+      if (enter && segs.length > from) groups.push({ from, enter, done: false });
+      return from;
+    }
+    const segAt = (g) => { let i = 0; while (i + 1 < segs.length && segs[i + 1].start <= g) i++; return i; };
+    const isEnd = (i) => /[.!?\n…]/.test(G[i - 1] || "") && /\s/.test(G[i] || " ");
+    function sentenceStart(g) { const s = segs[segAt(g)]; let a = Math.min(g, G.length); while (a > s.start && !isEnd(a)) a--; return a; }
+    function units(f, to) {
+      const out = []; const max = maxLen();
+      while (f < to) {
+        while (f < to && /\s/.test(G[f])) f++; if (f >= to) break;
+        let e = Math.min(to, f + max);
+        if (e < to) {
+          const w = G.slice(f, e);
+          let cut = Math.max(w.lastIndexOf(". "), w.lastIndexOf("? "), w.lastIndexOf("! "), w.lastIndexOf(": "), w.lastIndexOf("\n"));
+          if (cut < max * 0.3) cut = w.lastIndexOf(", "); if (cut < max * 0.3) cut = w.lastIndexOf(" ");
+          if (cut > 0) e = f + cut + 1;
+        }
+        out.push({ start: f, text: G.slice(f, e) }); f = e;
+      }
+      return out;
+    }
+    const stopAt = (f) => { const s = segs.find((x) => x.barrier && !x.passed && x.start >= f); return s ? s.start : G.length; };
+
+    /* --- affichage --- */
     const clearMarks = () => { if (HL) HL.clear(); $$(".reading").forEach((e) => e.classList.remove("reading")); };
     const show = (on) => { bar.hidden = !on; document.body.classList.toggle("has-player", on); };
     function ui() {
       tog.innerHTML = playing ? IC.pause : IC.play; tog.setAttribute("aria-label", playing ? "Pause" : "Reprendre la lecture");
-      pos.textContent = list.length ? `${Math.min(idx + 1, list.length)} / ${list.length}` : "";
+      posEl.textContent = segs.length ? `${Math.max(1, curSeg + 1)} / ${segs.length}` : "";
     }
-    function halt() { token++; clearInterval(tick); tick = null; try { if (synth) synth.cancel(); } catch (e) {} }
     function reveal(el) {
       const r = el.getBoundingClientRect(); const bottom = window.innerHeight - (bar.offsetHeight || 0) - (window.matchMedia("(max-width: 860px)").matches ? 80 : 16);
       if (r.top < 76 || r.bottom > bottom) window.scrollTo({ top: window.scrollY + r.top - Math.max(84, (bottom - Math.min(r.height, bottom - 84)) / 2), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     }
-    function mark(gi, c) {
-      if (HL) { HL.clear(); const r = rangeAt(info, gi); if (r) HL.add(r); }
-      const t = c.text; let a = Math.max(0, Math.min(gi - c.start, t.length));
-      while (a < t.length && !WORD.test(t[a])) a++;
-      let b = a; while (a > 0 && WORD.test(t[a - 1])) a--; while (b < t.length && WORD.test(t[b])) b++;
-      sub.innerHTML = `${esc(t.slice(0, a))}<mark>${esc(t.slice(a, b))}</mark>${esc(t.slice(b))}`;
+    function setPos(g) {
+      pos = g; const i = segAt(g); const s = segs[i]; if (!s) return;
+      if (i !== curSeg) {
+        curSeg = i;
+        groups.forEach((gr) => { if (!gr.done && i >= gr.from) { gr.done = true; gr.enter(); } });
+        $$(".reading").forEach((e) => e.classList.remove("reading"));
+        if (document.body.contains(s.el)) { s.el.classList.add("reading"); reveal(s.el); }
+        ui();
+      }
+      if (HL) { HL.clear(); const r = rangeAt(s, g); if (r) HL.add(r); }
+      // Sous-titre : la phrase en cours, mot prononcé en évidence.
+      let a = Math.min(g, s.end); while (a > s.start && !isEnd(a)) a--;
+      let b = Math.max(g, a); while (b < s.end && !isEnd(b)) b++;
+      if (b - a > 260) { a = Math.max(a, g - 120); b = Math.min(b, g + 140); }
+      let w0 = Math.max(a, Math.min(g, b)); while (w0 < b && !WORD.test(G[w0])) w0++;
+      let w1 = w0; while (w0 > a && WORD.test(G[w0 - 1])) w0--; while (w1 < b && WORD.test(G[w1])) w1++;
+      sub.innerHTML = `${esc(G.slice(a, w0))}<mark>${esc(G.slice(w0, w1))}</mark>${esc(G.slice(w1, b))}`;
     }
+
+    /* --- voix --- */
+    function halt() { token++; clearInterval(tick); tick = null; soft = false; try { if (synth) synth.cancel(); } catch (e) {} }
+    function follow(u, my, keep) {
+      clearInterval(tick); curU = u; if (!keep) { u.t0 = Date.now(); u.got = false; }
+      tick = setInterval(() => { if (my !== token || u.got || !playing) return; setPos(u.start + Math.min(u.text.length - 1, Math.floor(((Date.now() - u.t0) / 1000) * CPS * rate()))); }, 120);
+    }
+    // Met en file la lecture de f jusqu'à la prochaine pause prévue (ou la fin), sans interrompre ce qui est déjà en file.
+    function enqueue(f, my) {
+      const to = stopAt(f); const us = units(f, to); queuedTo = to;
+      if (!us.length) { onBlockEnd(my, to); return; }
+      let t = 0;
+      us.forEach((u, k) => {
+        const last = k === us.length - 1;
+        const onStart = () => { if (my !== token) return; started = token; follow(u, my); setPos(u.start); if (last) chainMore(my); };
+        const ended = () => { if (my !== token || !last || queuedTo !== to) return; clearInterval(tick); onBlockEnd(my, to); };
+        const dur = Math.max(700, (u.text.length / (CPS * rate())) * 1000);
+        if (!synth || silent) { setTimeout(onStart, t); setTimeout(ended, t + dur); t += dur; return; }
+        const ut = new SpeechSynthesisUtterance(u.text); ut.lang = "fr-FR"; ut.rate = rate(); const v = voice(); if (v) ut.voice = v;
+        ut.onstart = onStart;
+        ut.onboundary = (e) => { if (my !== token || (e.name && e.name !== "word")) return; u.got = true; setPos(u.start + e.charIndex); };
+        ut.onend = ended;
+        ut.onerror = (e) => { if (e.error !== "interrupted" && e.error !== "canceled") ended(); };
+        synth.speak(ut);
+      });
+    }
+    // Contenu suivant (ex. étape suivante d'un cas) préparé pendant la dernière phrase : la voix enchaîne sans blanc.
+    function chainMore(my) {
+      if (!opts.chain || chainedAt === segs.length || queuedTo < G.length) return;
+      chainedAt = segs.length; const r = opts.chain(); if (!r) return;
+      const from = addItems(r.items, r.enter); chainedAt = segs.length;
+      if (segs.length > from) enqueue(segs[from].start, my);
+    }
+    function onBlockEnd(my, to) {
+      if (to >= G.length) { finish(); return; }
+      const s = segs[segAt(to)]; // passage avec pause prévue (ex. temps pour réciter avant de retourner la carte)
+      sub.textContent = s.it.pauseText || "…";
+      setTimeout(() => { if (my !== token || !playing) return; s.passed = true; if (s.it.before) s.it.before(); enqueue(s.start, my); }, s.it.pause || 0);
+    }
+    function speakFrom(f) {
+      halt(); playing = true; ui(); const my = token;
+      if (synth && synth.paused) synth.resume();
+      setPos(f); enqueue(f, my);
+      // Si la voix ne démarre pas (voix en ligne sans connexion, voix indisponible), on bascule sur une autre voix française.
+      setTimeout(() => {
+        if (my !== token || !playing || started === my || !synth) return;
+        const v = voice(); if (v) avoid.add(v.name); if (!voice() || avoid.size >= 2) silent = true;
+        if (silent) sub.textContent = "Aucune voix disponible : lecture silencieuse avec surlignage.";
+        speakFrom(f);
+      }, 3500);
+    }
+
+    /* --- commandes --- */
     function play(items, o) {
       o = o || {};
-      if (list.length && opts.onStop && opts.owner !== o.owner) opts.onStop();
+      if (segs.length && opts.onStop && opts.owner !== o.owner) opts.onStop();
       halt(); clearMarks();
-      list = items.filter(Boolean); opts = o; idx = Math.max(0, Math.min(o.start || 0, list.length - 1)); cur = null;
-      if (!list.length) { show(false); return; }
-      playing = true; show(true); startSeg();
-    }
-    function startSeg() {
-      halt(); clearMarks();
-      if (idx >= list.length) return finish();
-      const it = list[idx]; const el = it.el || it;
-      if (it.pause && !it.waited) {
-        it.waited = true; const my = token; cur = null; ui(); sub.textContent = it.pauseText || "…";
-        setTimeout(() => { if (my === token && playing) startSeg(); }, it.pause); return;
-      }
-      if (it.before) it.before();
-      if (!document.body.contains(el)) { idx++; return startSeg(); }
-      info = textOf(el); chunk = 0; cur = { idx, chunks: chunksOf(info.text) };
-      if (!cur.chunks.length) { idx++; return startSeg(); }
-      el.classList.add("reading"); reveal(el); ui(); speakChunk();
-    }
-    function speakChunk() {
-      halt(); const my = token; const c = cur.chunks[chunk]; gotBoundary = false;
-      mark(c.start, c);
-      const t0 = Date.now(); const dur = Math.max(900, (c.text.length / (CPS * rate())) * 1000);
-      tick = setInterval(() => { if (my === token && !gotBoundary) mark(c.start + Math.min(c.text.length - 1, Math.floor(((Date.now() - t0) / 1000) * CPS * rate())), c); }, 140);
-      const done = () => {
-        if (my !== token) return; clearInterval(tick); chunk++;
-        if (chunk < cur.chunks.length) speakChunk();
-        else { idx++; setTimeout(() => { if (my === token && playing) startSeg(); }, 280); }
-      };
-      if (!synth) { setTimeout(done, dur); return; }
-      try {
-        const u = new SpeechSynthesisUtterance(c.text); u.lang = "fr-FR"; u.rate = rate(); const v = voice(); if (v) u.voice = v;
-        u.onboundary = (e) => { if (my !== token || (e.name && e.name !== "word")) return; gotBoundary = true; mark(c.start + e.charIndex, c); };
-        u.onend = () => { if (my !== token) return; const left = dur - (Date.now() - t0); if (left > dur * 0.7) setTimeout(done, left); else done(); };
-        u.onerror = (e) => { if (my !== token || e.error === "interrupted" || e.error === "canceled") return; setTimeout(done, Math.max(300, dur - (Date.now() - t0))); };
-        if (synth.paused) synth.resume();
-        synth.speak(u);
-      } catch (e) { setTimeout(done, dur); }
+      segs = []; G = ""; groups = []; opts = o; curSeg = -1; chainedAt = -1;
+      addItems(items);
+      if (!segs.length) { playing = false; show(false); return; }
+      show(true);
+      const want = items[o.start || 0]; const si = Math.max(0, segs.findIndex((s) => s.el === (want && (want.el || want))));
+      speakFrom(segs[si].start);
     }
     function toggle() {
-      if (!list.length) return;
-      if (playing) { playing = false; halt(); ui(); return; }
-      playing = true; ui();
-      if (!cur || cur.idx !== idx || chunk >= cur.chunks.length) startSeg(); else speakChunk();
+      if (!segs.length) return;
+      if (playing) {
+        playing = false; pausedAt = Date.now();
+        if (SOFT_PAUSE && synth && synth.speaking && !synth.paused) { synth.pause(); clearInterval(tick); soft = true; } else halt();
+        ui(); return;
+      }
+      if (soft && synth) {
+        playing = true; ui(); soft = false;
+        if (curU) { curU.t0 += Date.now() - pausedAt; follow(curU, token, true); }
+        synth.resume();
+        const my = token; // filet de sécurité : si la voix ne repart pas, on relance la phrase
+        setTimeout(() => { if (my === token && playing && !synth.speaking) speakFrom(sentenceStart(pos)); }, 700);
+        return;
+      }
+      speakFrom(sentenceStart(pos));
     }
-    function next() { if (!list.length) return; playing = true; idx++; startSeg(); }
-    function prev() { if (!list.length) return; playing = true; if (!cur || chunk === 0) idx = Math.max(0, idx - 1); if (list[idx]) list[idx].waited = false; startSeg(); }
-    function finish() { const f = opts.onEnd; halt(); clearMarks(); playing = false; list = []; opts = {}; show(false); if (f) f(); }
-    function stop() { const f = opts.onStop; halt(); clearMarks(); playing = false; list = []; opts = {}; if (bar) show(false); if (f) f(); }
-    function cycleRate() { S.rate = RATES[(RATES.indexOf(rate()) + 1) % RATES.length]; save(); rateBtn.textContent = fmtRate(); if (playing && cur && cur.idx === idx && chunk < cur.chunks.length) speakChunk(); }
-    return { init, play, stop, owner: () => (list.length ? opts.owner : null) };
+    function jump(i) {
+      if (!segs.length) return;
+      if (i >= segs.length) { finish(); return; }
+      i = Math.max(0, i); segs.forEach((s, k) => { if (k >= i) s.passed = false; });
+      if (segs[i].barrier) segs[i].passed = true;
+      if (segs[i].it.before) segs[i].it.before();
+      speakFrom(segs[i].start);
+    }
+    const next = () => jump(curSeg + 1);
+    const prev = () => jump(pos - segs[curSeg].start > 25 ? curSeg : curSeg - 1);
+    const restartHere = () => { if (playing && segs.length) speakFrom(sentenceStart(pos)); };
+    function finish() { const f = opts.onEnd; halt(); clearMarks(); playing = false; segs = []; G = ""; opts = {}; show(false); if (f) f(); }
+    function stop() { const f = opts.onStop; halt(); clearMarks(); playing = false; segs = []; G = ""; opts = {}; if (bar) show(false); if (f) f(); }
+    function cycleRate() { S.rate = RATES[(RATES.indexOf(rate()) + 1) % RATES.length]; save(); rateBtn.textContent = fmtRate(); restartHere(); }
+    return { init, play, stop };
   })();
   const listenBtn = (id, label) => `<button type="button" class="btn sm ghost listen" id="${id}">${IC.speaker}<span>${label}</span></button>`;
 
@@ -591,8 +668,8 @@
   function cardAudio() {
     const card = $("#fiche-out .flash"); if (!card) { fState.audio = false; return; }
     const flipTo = () => { if (!fState.flipped) { fState.flipped = true; card.classList.add("flipped"); } };
-    const back = blocks($(".flash-face.back", card));
-    Reader.play([$(".flash-face.front h2", card), ...back.map((el, j) => (j ? el : { el, pause: 2500, pauseText: "À toi : récite la définition…", before: flipTo }))], {
+    const back = blocks($(".flash-face.back", card)).filter((el) => el.tagName !== "H3"); // le terme vient d'être lu au recto
+    Reader.play([$(".flash-face.front h2", card), ...back.map((el, j) => (j ? el : { el, pause: 2000, pauseText: "À toi : récite la définition…", before: flipTo }))], {
       owner: "cartes",
       onStop: () => { fState.audio = false; },
       onEnd: () => { if (!fState.deck || fState.i >= fState.deck.length - 1) { fState.audio = false; return; } fState.i++; fState.flipped = false; drawFiches(); }
@@ -736,22 +813,25 @@
         <p class="small">Fais l'exercice sans regarder l'explication, comme au devoir. ${k.exercise.some((q) => q.t === "write") ? "Pour les rédactions, compare ensuite avec le corrigé et coche la grille honnêtement." : ""}</p>
         <div id="ex" class="stack"></div>
       </section>`);
-    const drawStep = () => {
-      const s = k.steps[cur];
+    const stepEl = (i) => { const s = k.steps[i]; const d = document.createElement("div"); d.innerHTML = `<article class="step fade-in"><span class="step-k">Étape ${i + 1} sur ${k.steps.length}</span><h2>${esc(s.t)}</h2><div class="step-body">${s.b}</div></article>`; return d.firstElementChild; };
+    const drawStep = (art) => {
       $("#dots").innerHTML = k.steps.map((_, i) => `<button type="button" class="step-dot ${i === cur ? "cur" : seen.has(i) ? "seen" : ""}" data-i="${i}" aria-label="Étape ${i + 1}">${i + 1}</button>`).join("");
       $$("#dots .step-dot").forEach((b) => b.addEventListener("click", () => { go(+b.dataset.i); }));
-      $("#step").innerHTML = `<article class="step fade-in"><span class="step-k">Étape ${cur + 1} sur ${k.steps.length}</span><h2>${esc(s.t)}</h2><div class="step-body">${s.b}</div></article>`;
+      $("#step").replaceChildren(art || stepEl(cur));
       $("#prev").disabled = cur === 0;
       $("#next").textContent = cur < k.steps.length - 1 ? "Étape suivante →" : "Passer à l'exercice ↓";
       drawGuide();
     };
     const drawGuide = () => { $("#guide").innerHTML = guided ? `<span class="guided"><span class="pulse"></span>Arrêter l'écoute</span>` : `${IC.speaker}<span>Écouter les étapes</span>`; };
     const go = (i) => { cur = Math.max(0, Math.min(k.steps.length - 1, i)); seen.add(cur); drawStep(); if (guided) narrate(); };
-    const narrate = () => Reader.play(blocks($("#step")), {
+    // L'étape suivante est préparée pendant la fin de la lecture et s'affiche quand la voix l'attaque : aucun blanc.
+    let ahead = 0;
+    const narrate = () => { ahead = cur; Reader.play(blocks($("#step")), {
       owner: "cas",
+      chain: () => { if (ahead >= k.steps.length - 1) return null; const i = ++ahead; const art = stepEl(i); return { items: blocks(art), enter: () => { cur = i; seen.add(i); drawStep(art); } }; },
       onStop: () => { guided = false; drawGuide(); },
-      onEnd: () => { if (cur < k.steps.length - 1) { cur++; seen.add(cur); drawStep(); narrate(); } else { guided = false; drawGuide(); } }
-    });
+      onEnd: () => { guided = false; drawGuide(); }
+    }); };
     const stopGuide = () => { if (guided) Reader.stop(); };
     $("#prev").addEventListener("click", () => go(cur - 1));
     $("#next").addEventListener("click", () => { if (cur < k.steps.length - 1) go(cur + 1); else { stopGuide(); $("#train").scrollIntoView({ behavior: "smooth", block: "start" }); } });
