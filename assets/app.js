@@ -104,8 +104,10 @@
     meta.push(`<span class="tag">${TYPE[q.t] || q.t}</span>`);
     if (q.src) meta.push(srcTag(q.src));
     if (opts.pts != null) meta.push(`<span class="pts">${fmt(opts.pts)} pt${opts.pts > 1 ? "s" : ""}</span>`);
+    meta.push(`<button type="button" class="listen-ic" aria-label="Écouter la question">${IC.speaker}</button>`);
     el.innerHTML = `<div class="qmeta">${meta.join("")}</div>${opts.intro ? `<div class="qintro">${esc(opts.intro)}</div>` : ""}<p class="qtext">${esc(q.q)}</p><div class="qbody"></div><div class="qfb"></div><div class="qact"></div>`;
     const body = $(".qbody", el), fbox = $(".qfb", el), act = $(".qact", el);
+    $(".listen-ic", el).addEventListener("click", () => Reader.play(blocks(el), { owner: "question" }));
     const letters = "ABCDEFGH";
     let data = {};
 
@@ -310,32 +312,194 @@
     cas: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><path d="M7.5 15h9"/></svg>',
     exam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M10 2h4"/></svg>',
     prog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
-    moon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>'
+    moon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+    speaker: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+    play: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6" y="5" width="4.2" height="14" rx="1.2"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.2"/></svg>',
+    prev: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M6 5h2v14H6zM20 6.2v11.6a1 1 0 0 1-1.53.85L9.5 13a1.2 1.2 0 0 1 0-2l8.97-5.65A1 1 0 0 1 20 6.2z"/></svg>',
+    next: '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M16 5h2v14h-2zM4 6.2v11.6a1 1 0 0 0 1.53.85L14.5 13a1.2 1.2 0 0 0 0-2L5.53 5.35A1 1 0 0 0 4 6.2z"/></svg>',
+    close: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>'
   };
   const NAV = [["accueil", "Accueil", "home"], ["fiches", "Fiches", "fiches"], ["quiz", "Quiz", "quiz"], ["cas", "Cas pratiques", "cas"], ["examens", "Examens", "exam"], ["progres", "Progrès", "prog"]];
 
-  /* ─────────── Lecture guidée (voix) ─────────── */
-  let speaking = null;
-  function plain(html) {
-    const d = document.createElement("div"); d.innerHTML = html;
-    return d.textContent.replace(/→/g, ", puis ").replace(/÷/g, " divisé par ").replace(/≈/g, " environ ").replace(/²/g, " au carré").replace(/√/g, "racine de ").replace(/×/g, " fois ").replace(/±/g, " plus ou moins ").replace(/\s+/g, " ").trim();
+  /* ─────────── Lecteur audio : lit à voix haute et surligne ce qui est lu ─────────── */
+  // Le texte est découpé en passages (titres, paragraphes, puces, choix…). Le passage lu est surligné,
+  // le mot prononcé aussi (quand le navigateur le permet), et la barre du bas affiche la phrase en sous-titre.
+  const SAY = [[/→/g, ", puis "], [/←/g, " "], [/÷/g, " divisé par "], [/≈/g, " environ "], [/²/g, " au carré"], [/√/g, "racine de "], [/×/g, " fois "], [/±/g, " plus ou moins "], [/≠/g, " différent de "], [/≤/g, " inférieur ou égal à "], [/≥/g, " supérieur ou égal à "], [/[★✔✗✎◐○↻]/gu, " "]];
+  const sayable = (t) => SAY.reduce((a, [re, by]) => a.replace(re, by), t);
+  const SKIP = ".tag, .badge, .no, .qmeta, .qact, .step-dots, .flash-hint, .listen, .listen-ic, button:not(.choice):not(.ochip), select, textarea, input, svg, script, style, [hidden], [aria-hidden='true']";
+  const SEG = "h1, h2, h3, p, li, blockquote, tr, .choice, .ochip, .memo, .warnbox, .tip, .qintro, .calc, .fb-head, .order-label";
+  const WORD = /[\p{L}\p{N}’'-]/u;
+  function blocks(root) {
+    const out = [];
+    const walk = (el) => {
+      if (el.matches(SKIP)) return;
+      if (el.matches(SEG) || Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim())) { if (el.textContent.trim()) out.push(el); return; }
+      Array.from(el.children).forEach(walk);
+    };
+    if (root) walk(root);
+    return out;
   }
-  function stopSpeech() { if (speaking) { speaking.cancel = true; clearTimeout(speaking.timer); speaking = null; } try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) {} }
-  function speak(text, onend) {
-    const token = speaking; const t0 = Date.now();
-    const fallback = () => { if (speaking !== token || !token || token.cancel) return; token.timer = setTimeout(() => { if (speaking === token && !token.cancel) onend(); }, Math.min(14000, 2500 + text.length * 50)); };
-    try {
-      if (!("speechSynthesis" in window)) return fallback();
-      const u = new SpeechSynthesisUtterance(text); u.lang = "fr-FR"; u.rate = 1.02;
-      const v = speechSynthesis.getVoices().find((x) => /^fr/i.test(x.lang)); if (v) u.voice = v;
-      u.onend = () => { if (speaking !== token || token.cancel) return; if (Date.now() - t0 < 400) fallback(); else onend(); };
-      u.onerror = () => { if (speaking !== token || token.cancel) return; fallback(); };
-      speechSynthesis.speak(u);
-    } catch (e) { fallback(); }
+  function textOf(el) {
+    const pieces = []; let text = "";
+    const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (n) => { const k = n.parentElement && n.parentElement.closest(SKIP); return k && el.contains(k) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; } });
+    let n, prev = null;
+    while ((n = tw.nextNode())) {
+      const raw = n.textContent;
+      if (!raw.trim()) { if (text && !/\s$/.test(text)) text += " "; continue; }
+      if (prev && prev.parentElement.closest(".letter")) text += ". ";
+      else if (text && !/\s$/.test(text) && !/^\s/.test(raw) && prev && prev.parentElement !== n.parentElement && !prev.parentElement.contains(n) && !n.parentElement.contains(prev) && /^(TD|TH|LI)$/.test(n.parentElement.tagName)) text += ", ";
+      const said = sayable(raw);
+      pieces.push({ node: n, start: text.length, len: said.length, raw });
+      text += said; prev = n;
+    }
+    return { text, pieces };
+  }
+  function chunksOf(text) {
+    const out = []; const re = /[^.!?;:\n]+[.!?;:\n]*\s*/g; let m, cur = null;
+    while ((m = re.exec(text))) {
+      if (cur && cur.text.length + m[0].length <= 200) cur.text += m[0];
+      else { cur = { start: m.index, text: m[0] }; out.push(cur); }
+    }
+    // Les phrases très longues sont recoupées aux virgules (certaines voix s'arrêtent au-delà de ~15 s).
+    const fin = [];
+    out.forEach((c) => {
+      while (c.text.length > 240) {
+        let cut = c.text.lastIndexOf(", ", 200); if (cut < 60) cut = c.text.lastIndexOf(" ", 200); if (cut < 60) break;
+        fin.push({ start: c.start, text: c.text.slice(0, cut + 1) }); c = { start: c.start + cut + 1, text: c.text.slice(cut + 1) };
+      }
+      fin.push(c);
+    });
+    return fin.filter((c) => c.text.trim());
+  }
+  function rangeAt(info, gi) {
+    const p = info.pieces.find((x) => gi >= x.start && gi < x.start + x.len); if (!p) return null;
+    const t = p.raw; let o = p.len === t.length ? gi - p.start : Math.round(((gi - p.start) / p.len) * t.length);
+    o = Math.min(Math.max(0, o), t.length - 1);
+    while (o < t.length && !WORD.test(t[o])) o++;
+    if (o >= t.length) return null;
+    let a = o, b = o; while (a > 0 && WORD.test(t[a - 1])) a--; while (b < t.length && WORD.test(t[b])) b++;
+    const r = document.createRange(); r.setStart(p.node, a); r.setEnd(p.node, b); return r;
   }
 
+  const Reader = (() => {
+    const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
+    const HL = window.CSS && CSS.highlights && typeof Highlight === "function" ? new Highlight() : null;
+    if (HL) CSS.highlights.set("reading-word", HL);
+    const RATES = [0.8, 1, 1.2, 1.4, 1.7];
+    const CPS = 14.5; // caractères lus par seconde à vitesse 1, pour suivre le texte quand la voix ne donne pas sa position
+    let list = [], opts = {}, idx = 0, chunk = 0, info = null, cur = null, token = 0, playing = false, tick = null, gotBoundary = false;
+    let bar, sub, pos, tog, rateBtn, voiceSel;
+    const rate = () => (RATES.includes(S.rate) ? S.rate : 1);
+    const fmtRate = () => String(rate()).replace(".", ",") + "×";
+    const voices = () => (synth ? synth.getVoices().filter((v) => /^fr/i.test(v.lang)) : []);
+    function voice() {
+      const vs = voices(); if (!vs.length) return null;
+      const saved = vs.find((v) => v.name === S.voice); if (saved) return saved;
+      const sc = (v) => (/natural|online|neural/i.test(v.name) ? 4 : 0) + (/google/i.test(v.name) ? 2 : 0) + (/fr-FR/i.test(v.lang) ? 1 : 0);
+      return vs.slice().sort((a, b) => sc(b) - sc(a))[0];
+    }
+    function fillVoices() {
+      const vs = voices(); const v = voice();
+      voiceSel.innerHTML = vs.map((x) => `<option ${v && x.name === v.name ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+      voiceSel.hidden = vs.length < 2;
+    }
+    function init() {
+      document.body.insertAdjacentHTML("beforeend", `<div class="player" id="player" role="region" aria-label="Lecteur audio" hidden>
+        <p class="player-sub" id="player-sub"></p>
+        <div class="player-ctl">
+          <button type="button" class="pbtn" data-p="prev" aria-label="Passage précédent">${IC.prev}</button>
+          <button type="button" class="pbtn main" data-p="toggle" aria-label="Pause">${IC.pause}</button>
+          <button type="button" class="pbtn" data-p="next" aria-label="Passage suivant">${IC.next}</button>
+          <span class="player-pos" id="player-pos"></span>
+          <select class="player-voice" id="player-voice" aria-label="Voix" hidden></select>
+          <button type="button" class="pbtn rate" data-p="rate" aria-label="Vitesse de lecture"></button>
+          <button type="button" class="pbtn" data-p="stop" aria-label="Arrêter la lecture">${IC.close}</button>
+        </div></div>`);
+      bar = $("#player"); sub = $("#player-sub"); pos = $("#player-pos"); tog = $("[data-p=toggle]", bar); rateBtn = $("[data-p=rate]", bar); voiceSel = $("#player-voice");
+      rateBtn.textContent = fmtRate();
+      bar.addEventListener("click", (e) => { const b = e.target.closest("[data-p]"); if (b) ({ prev, next, toggle, stop, rate: cycleRate })[b.dataset.p](); });
+      voiceSel.addEventListener("change", () => { S.voice = voiceSel.value; save(); if (playing) speakChunk(); });
+      if (synth) { fillVoices(); if (synth.addEventListener) synth.addEventListener("voiceschanged", fillVoices); else synth.onvoiceschanged = fillVoices; }
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape" && list.length) stop(); });
+    }
+    const clearMarks = () => { if (HL) HL.clear(); $$(".reading").forEach((e) => e.classList.remove("reading")); };
+    const show = (on) => { bar.hidden = !on; document.body.classList.toggle("has-player", on); };
+    function ui() {
+      tog.innerHTML = playing ? IC.pause : IC.play; tog.setAttribute("aria-label", playing ? "Pause" : "Reprendre la lecture");
+      pos.textContent = list.length ? `${Math.min(idx + 1, list.length)} / ${list.length}` : "";
+    }
+    function halt() { token++; clearInterval(tick); tick = null; try { if (synth) synth.cancel(); } catch (e) {} }
+    function reveal(el) {
+      const r = el.getBoundingClientRect(); const bottom = window.innerHeight - (bar.offsetHeight || 0) - (window.matchMedia("(max-width: 860px)").matches ? 80 : 16);
+      if (r.top < 76 || r.bottom > bottom) window.scrollTo({ top: window.scrollY + r.top - Math.max(84, (bottom - Math.min(r.height, bottom - 84)) / 2), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    }
+    function mark(gi, c) {
+      if (HL) { HL.clear(); const r = rangeAt(info, gi); if (r) HL.add(r); }
+      const t = c.text; let a = Math.max(0, Math.min(gi - c.start, t.length));
+      while (a < t.length && !WORD.test(t[a])) a++;
+      let b = a; while (a > 0 && WORD.test(t[a - 1])) a--; while (b < t.length && WORD.test(t[b])) b++;
+      sub.innerHTML = `${esc(t.slice(0, a))}<mark>${esc(t.slice(a, b))}</mark>${esc(t.slice(b))}`;
+    }
+    function play(items, o) {
+      o = o || {};
+      if (list.length && opts.onStop && opts.owner !== o.owner) opts.onStop();
+      halt(); clearMarks();
+      list = items.filter(Boolean); opts = o; idx = Math.max(0, Math.min(o.start || 0, list.length - 1)); cur = null;
+      if (!list.length) { show(false); return; }
+      playing = true; show(true); startSeg();
+    }
+    function startSeg() {
+      halt(); clearMarks();
+      if (idx >= list.length) return finish();
+      const it = list[idx]; const el = it.el || it;
+      if (it.pause && !it.waited) {
+        it.waited = true; const my = token; cur = null; ui(); sub.textContent = it.pauseText || "…";
+        setTimeout(() => { if (my === token && playing) startSeg(); }, it.pause); return;
+      }
+      if (it.before) it.before();
+      if (!document.body.contains(el)) { idx++; return startSeg(); }
+      info = textOf(el); chunk = 0; cur = { idx, chunks: chunksOf(info.text) };
+      if (!cur.chunks.length) { idx++; return startSeg(); }
+      el.classList.add("reading"); reveal(el); ui(); speakChunk();
+    }
+    function speakChunk() {
+      halt(); const my = token; const c = cur.chunks[chunk]; gotBoundary = false;
+      mark(c.start, c);
+      const t0 = Date.now(); const dur = Math.max(900, (c.text.length / (CPS * rate())) * 1000);
+      tick = setInterval(() => { if (my === token && !gotBoundary) mark(c.start + Math.min(c.text.length - 1, Math.floor(((Date.now() - t0) / 1000) * CPS * rate())), c); }, 140);
+      const done = () => {
+        if (my !== token) return; clearInterval(tick); chunk++;
+        if (chunk < cur.chunks.length) speakChunk();
+        else { idx++; setTimeout(() => { if (my === token && playing) startSeg(); }, 280); }
+      };
+      if (!synth) { setTimeout(done, dur); return; }
+      try {
+        const u = new SpeechSynthesisUtterance(c.text); u.lang = "fr-FR"; u.rate = rate(); const v = voice(); if (v) u.voice = v;
+        u.onboundary = (e) => { if (my !== token || (e.name && e.name !== "word")) return; gotBoundary = true; mark(c.start + e.charIndex, c); };
+        u.onend = () => { if (my !== token) return; const left = dur - (Date.now() - t0); if (left > dur * 0.7) setTimeout(done, left); else done(); };
+        u.onerror = (e) => { if (my !== token || e.error === "interrupted" || e.error === "canceled") return; setTimeout(done, Math.max(300, dur - (Date.now() - t0))); };
+        if (synth.paused) synth.resume();
+        synth.speak(u);
+      } catch (e) { setTimeout(done, dur); }
+    }
+    function toggle() {
+      if (!list.length) return;
+      if (playing) { playing = false; halt(); ui(); return; }
+      playing = true; ui();
+      if (!cur || cur.idx !== idx || chunk >= cur.chunks.length) startSeg(); else speakChunk();
+    }
+    function next() { if (!list.length) return; playing = true; idx++; startSeg(); }
+    function prev() { if (!list.length) return; playing = true; if (!cur || chunk === 0) idx = Math.max(0, idx - 1); if (list[idx]) list[idx].waited = false; startSeg(); }
+    function finish() { const f = opts.onEnd; halt(); clearMarks(); playing = false; list = []; opts = {}; show(false); if (f) f(); }
+    function stop() { const f = opts.onStop; halt(); clearMarks(); playing = false; list = []; opts = {}; if (bar) show(false); if (f) f(); }
+    function cycleRate() { S.rate = RATES[(RATES.indexOf(rate()) + 1) % RATES.length]; save(); rateBtn.textContent = fmtRate(); if (playing && cur && cur.idx === idx && chunk < cur.chunks.length) speakChunk(); }
+    return { init, play, stop, owner: () => (list.length ? opts.owner : null) };
+  })();
+  const listenBtn = (id, label) => `<button type="button" class="btn sm ghost listen" id="${id}">${IC.speaker}<span>${label}</span></button>`;
+
   /* ─────────── Rendu commun ─────────── */
-  function render(html, wide) { stopSpeech(); clearTimer(); view().innerHTML = `<div class="wrap ${wide ? "wide" : ""} fade-in">${html}</div>`; window.scrollTo(0, 0); }
+  function render(html, wide) { Reader.stop(); clearTimer(); view().innerHTML = `<div class="wrap ${wide ? "wide" : ""} fade-in">${html}</div>`; window.scrollTo(0, 0); }
   function setNav(h) {
     const key = h.startsWith("cas") ? "cas" : h.startsWith("examen") ? "examens" : h || "accueil";
     $$(".nav a, .tabbar a").forEach((a) => a.setAttribute("aria-current", a.dataset.k === key ? "page" : "false"));
@@ -358,7 +522,7 @@
           <div class="counts"><span><b>${D.fiches.length}</b> fiches</span><span><b>${D.questions.length}</b> questions</span><span><b>${D.cas.length}</b> cas pratiques</span><span><b>${D.examens.length}</b> sujets</span></div>
         </div>
         <aside class="daily" aria-label="Mémo du jour">
-          <span class="eyebrow">Mémo du jour · ${chap(f.ch).code}</span>
+          <div class="row" style="justify-content:space-between"><span class="eyebrow">Mémo du jour · ${chap(f.ch).code}</span><button type="button" class="listen-ic" id="daily-listen" aria-label="Écouter le mémo du jour">${IC.speaker}</button></div>
           <h3>${esc(f.term)}</h3>
           <p class="def">${esc(f.def)}</p>
           <p class="memo">${esc(f.memo)}</p>
@@ -384,6 +548,7 @@
         <p class="small">Le cheminement du chapitre 3. Le cas pratique « Le parcours complet » le déroule sur l'exercice 9 du TD.</p>
         <a class="btn sm ghost" href="#cas-parcours" style="align-self:flex-start">Voir le cas pratique</a>
       </section>`);
+    $("#daily-listen").addEventListener("click", () => Reader.play(blocks($(".daily")), { owner: "daily" }));
     $$("[data-go]", view()).forEach((b) => b.addEventListener("click", () => {
       quizCfg = Object.assign(defaultCfg(), b.dataset.go === "smart" ? { mode: "smart", n: 15 } : b.dataset.go === "review" ? { mode: "review", n: 0 } : { mode: "c25", n: 0 });
       startQuiz(); location.hash = "quiz";
@@ -391,7 +556,7 @@
   }
 
   /* ─────────── Fiches ─────────── */
-  let fState = { ch: "all", q: "", mode: "list", i: 0, deck: null, flipped: false };
+  let fState = { ch: "all", q: "", mode: "list", i: 0, deck: null, flipped: false, audio: false };
   function viewFiches() {
     render(`
       <header class="page-head"><span class="eyebrow">${D.fiches.length} définitions</span><h1>Fiches mémo</h1><p>Les définitions courtes à savoir réciter, avec un moyen mnémotechnique quand il existe. Les fiches surlignées en jaune sont tombées au contrôle 2025.</p></header>
@@ -400,11 +565,17 @@
       </div>
       <div class="toolbar">
         <input class="search" id="fiche-search" type="search" placeholder="Chercher un mot (ex. hypothèse, Zotero…)" value="${esc(fState.q)}">
+        ${listenBtn("fiche-listen", "Écouter")}
         <div class="seg" role="group" aria-label="Affichage"><button type="button" data-m="list" aria-pressed="${fState.mode === "list"}">Liste</button><button type="button" data-m="cards" aria-pressed="${fState.mode === "cards"}">Cartes</button></div>
       </div>
       <div id="fiche-out"></div>`);
     $$("[data-ch]", view()).forEach((b) => b.addEventListener("click", () => { fState.ch = b.dataset.ch; fState.i = 0; fState.deck = null; $$("[data-ch]", view()).forEach((x) => x.setAttribute("aria-pressed", x === b)); drawFiches(); }));
     $$("[data-m]", view()).forEach((b) => b.addEventListener("click", () => { fState.mode = b.dataset.m; fState.i = 0; fState.deck = null; $$("[data-m]", view()).forEach((x) => x.setAttribute("aria-pressed", x === b)); drawFiches(); }));
+    $("#fiche-listen").addEventListener("click", () => {
+      if (fState.mode === "cards") { fState.audio = true; cardAudio(); return; }
+      const segs = blocks($("#fiche-out")); const first = segs.findIndex((x) => x.getBoundingClientRect().bottom > 90);
+      Reader.play(segs, { owner: "fiches", start: Math.max(0, first) });
+    });
     $("#fiche-search").addEventListener("input", (e) => { fState.q = e.target.value; fState.i = 0; fState.deck = null; drawFiches(); });
     drawFiches();
   }
@@ -416,7 +587,19 @@
   function ficheBody(f) {
     return `${f.pts ? `<ul>${f.pts.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}${f.memo ? `<p class="memo">${esc(f.memo)}</p>` : ""}${f.warn ? `<div class="warnbox"><b>Attention.</b> ${esc(f.warn)}</div>` : ""}${f.note ? `<p class="note">${esc(f.note)}</p>` : ""}`;
   }
+  // Cartes en audio : lit le terme, laisse le temps de réciter, retourne la carte, lit la réponse, puis passe à la suivante.
+  function cardAudio() {
+    const card = $("#fiche-out .flash"); if (!card) { fState.audio = false; return; }
+    const flipTo = () => { if (!fState.flipped) { fState.flipped = true; card.classList.add("flipped"); } };
+    const back = blocks($(".flash-face.back", card));
+    Reader.play([$(".flash-face.front h2", card), ...back.map((el, j) => (j ? el : { el, pause: 2500, pauseText: "À toi : récite la définition…", before: flipTo }))], {
+      owner: "cartes",
+      onStop: () => { fState.audio = false; },
+      onEnd: () => { if (!fState.deck || fState.i >= fState.deck.length - 1) { fState.audio = false; return; } fState.i++; fState.flipped = false; drawFiches(); }
+    });
+  }
   function drawFiches() {
+    if (!(fState.mode === "cards" && fState.audio)) Reader.stop();
     const out = $("#fiche-out"); const list = filteredFiches();
     if (!list.length) { out.innerHTML = `<div class="panel empty">Aucune fiche ne correspond. Essaie un autre mot.</div>`; return; }
     if (fState.mode === "list") {
@@ -453,6 +636,7 @@
     $$("[data-f]", out).forEach((b) => b.addEventListener("click", () => move(b.dataset.f)));
     // Flèches du clavier et balayage sur téléphone
     flashKeys = (e) => { if (!document.body.contains(card) || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return; if (e.key === "ArrowLeft") move("prev"); else if (e.key === "ArrowRight") move("next"); };
+    if (fState.audio) cardAudio();
     let x0 = null;
     card.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
     card.addEventListener("touchend", (e) => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 60) { e.preventDefault(); move(dx < 0 ? "next" : "prev"); } });
@@ -501,11 +685,11 @@
   }
   function drawSession() {
     const s = session; const q = s.list[s.i];
-    render(`<div class="session-head"><button type="button" class="btn sm quiet" id="quit">✕ Quitter</button><div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length} · ✔ ${s.res.filter((r) => r.ok).length}</span></div><div id="qslot"></div>`);
+    render(`<div class="session-head"><button type="button" class="btn sm quiet" id="quit">✕ Quitter</button><button type="button" class="btn sm ${S.autoRead ? "" : "quiet"}" id="auto" aria-pressed="${!!S.autoRead}" title="Lire chaque question et sa correction à voix haute">${IC.speaker}<span>Auto</span></button><div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length} · ✔ ${s.res.filter((r) => r.ok).length}</span></div><div id="qslot"></div>`);
     const rec = recorder(q.id);
     const card = QCard(q, {
       mode: "practice", num: s.i + 1, total: s.list.length,
-      onChecked: (res) => { if (q.t !== "write") rec(res.ok); },
+      onChecked: (res) => { if (q.t !== "write") rec(res.ok); if (S.autoRead) Reader.play(blocks($(".qfb", card.el)), { owner: "quiz" }); },
       onScore: (res) => rec(res.ok),
       next: (res) => { rec(res.ok); s.res.push({ id: q.id, ok: res.ok }); s.i++; viewQuiz(); },
       nextLabel: s.i + 1 < s.list.length ? "Question suivante →" : "Voir mon résultat →"
@@ -513,6 +697,11 @@
     $("#qslot").appendChild(card.el);
     const ta = $("textarea, input.answer", card.el); if (ta && window.matchMedia("(min-width: 861px)").matches) ta.focus();
     $("#quit").addEventListener("click", () => { session = null; viewQuiz(); });
+    $("#auto").addEventListener("click", (e) => {
+      S.autoRead = !S.autoRead; save(); const b = e.currentTarget; b.setAttribute("aria-pressed", S.autoRead); b.classList.toggle("quiet", !S.autoRead);
+      if (S.autoRead) Reader.play(blocks(card.el), { owner: "quiz" }); else Reader.stop();
+    });
+    if (S.autoRead) Reader.play(blocks(card.el), { owner: "quiz" });
   }
   function drawSessionEnd() {
     const s = session; const ok = s.res.filter((r) => r.ok).length; const n = s.res.length;
@@ -538,7 +727,7 @@
       <a href="#cas" class="small">← Tous les cas pratiques</a>
       <header class="page-head"><span class="eyebrow">${chap(k.ch).code} · Cas pratique</span><h1>${esc(k.title)}</h1><p>${esc(k.sub)}</p><div class="row">${srcTag(k.src)}<span class="tag">${k.steps.length} étapes</span><span class="tag">≈ ${k.min} min</span></div></header>
       <section class="stack" aria-label="Explication pas à pas">
-        <div class="row" style="justify-content:space-between"><div class="step-dots" id="dots"></div><button type="button" class="btn sm ghost" id="guide"></button></div>
+        <div class="row" style="justify-content:space-between"><div class="step-dots" id="dots"></div><button type="button" class="btn sm ghost listen" id="guide"></button></div>
         <div id="step"></div>
         <div class="step-nav"><button type="button" class="btn quiet" id="prev">← Étape précédente</button><button type="button" class="btn" id="next"></button></div>
       </section>
@@ -550,18 +739,23 @@
     const drawStep = () => {
       const s = k.steps[cur];
       $("#dots").innerHTML = k.steps.map((_, i) => `<button type="button" class="step-dot ${i === cur ? "cur" : seen.has(i) ? "seen" : ""}" data-i="${i}" aria-label="Étape ${i + 1}">${i + 1}</button>`).join("");
-      $$("#dots .step-dot").forEach((b) => b.addEventListener("click", () => { go(+b.dataset.i, true); }));
+      $$("#dots .step-dot").forEach((b) => b.addEventListener("click", () => { go(+b.dataset.i); }));
       $("#step").innerHTML = `<article class="step fade-in"><span class="step-k">Étape ${cur + 1} sur ${k.steps.length}</span><h2>${esc(s.t)}</h2><div class="step-body">${s.b}</div></article>`;
       $("#prev").disabled = cur === 0;
       $("#next").textContent = cur < k.steps.length - 1 ? "Étape suivante →" : "Passer à l'exercice ↓";
-      $("#guide").innerHTML = guided ? `<span class="guided"><span class="pulse"></span>Arrêter la lecture</span>` : "▶ Lecture guidée";
+      drawGuide();
     };
-    const go = (i, manual) => { if (manual && guided) stopGuide(); cur = Math.max(0, Math.min(k.steps.length - 1, i)); seen.add(cur); drawStep(); if (guided) narrate(); };
-    const narrate = () => { const s = k.steps[cur]; speaking = { cancel: false }; speak(s.t + ". " + plain(s.b), () => { if (!guided) return; if (cur < k.steps.length - 1) { cur++; seen.add(cur); drawStep(); narrate(); } else { stopGuide(); } }); };
-    const stopGuide = () => { guided = false; stopSpeech(); drawStep(); };
-    $("#prev").addEventListener("click", () => go(cur - 1, true));
-    $("#next").addEventListener("click", () => { if (cur < k.steps.length - 1) go(cur + 1, true); else { stopGuide(); $("#train").scrollIntoView({ behavior: "smooth", block: "start" }); } });
-    $("#guide").addEventListener("click", () => { if (guided) stopGuide(); else { guided = true; drawStep(); narrate(); } });
+    const drawGuide = () => { $("#guide").innerHTML = guided ? `<span class="guided"><span class="pulse"></span>Arrêter l'écoute</span>` : `${IC.speaker}<span>Écouter les étapes</span>`; };
+    const go = (i) => { cur = Math.max(0, Math.min(k.steps.length - 1, i)); seen.add(cur); drawStep(); if (guided) narrate(); };
+    const narrate = () => Reader.play(blocks($("#step")), {
+      owner: "cas",
+      onStop: () => { guided = false; drawGuide(); },
+      onEnd: () => { if (cur < k.steps.length - 1) { cur++; seen.add(cur); drawStep(); narrate(); } else { guided = false; drawGuide(); } }
+    });
+    const stopGuide = () => { if (guided) Reader.stop(); };
+    $("#prev").addEventListener("click", () => go(cur - 1));
+    $("#next").addEventListener("click", () => { if (cur < k.steps.length - 1) go(cur + 1); else { stopGuide(); $("#train").scrollIntoView({ behavior: "smooth", block: "start" }); } });
+    $("#guide").addEventListener("click", () => { if (guided) stopGuide(); else { guided = true; drawGuide(); narrate(); } });
     drawStep();
     const ex = $("#ex");
     if (k.special === "stats") ex.appendChild(StatsTrainer());
@@ -761,6 +955,7 @@
     $("#tabbar").innerHTML = NAV.filter((n) => n[0] !== "progres").map(([k, l, ic]) => `<a href="#${k}" data-k="${k}">${IC[ic]}<span>${l === "Cas pratiques" ? "Cas" : l}</span></a>`).join("");
     $$(".theme-btn").forEach((b) => { b.innerHTML = `${IC.moon}<span class="theme-label"></span>`; b.addEventListener("click", cycleTheme); });
     applyTheme();
+    Reader.init();
     window.addEventListener("hashchange", route);
     route();
   }

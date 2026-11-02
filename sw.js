@@ -1,5 +1,5 @@
 /* Service worker : permet de réviser hors ligne une fois le site ouvert une première fois. */
-const CACHE = "carnet-recherche-v3";
+const CACHE = "carnet-recherche-v4";
 const FILES = ["./", "index.html", "assets/style.css", "assets/app.js", "assets/data-fiches.js", "assets/data-questions.js", "assets/data-cas.js", "assets/data-examens.js", "icon.svg", "icon-192.png", "icon-512.png", "manifest.webmanifest"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
