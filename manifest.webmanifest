@@ -1,0 +1,16 @@
+{
+  "name": "Carnet de recherche",
+  "short_name": "Carnet",
+  "description": "Révisions d'Initiation à la recherche : fiches, quiz, cas pratiques, examens.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f2ea",
+  "theme_color": "#12302a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
