@@ -4,8 +4,9 @@ Site de révision pour le cours **Initiation à la recherche** (Master Informati
 
 En ligne : **https://lysias01.github.io/initiation-Recherche/**
 
-- **Fiches mémo** : 80 définitions courtes avec moyens mnémotechniques (mode liste ou cartes à retourner).
+- **Fiches mémo** : 80 définitions courtes avec moyens mnémotechniques (mode liste ou cartes à retourner, avec boutons ← → , flèches du clavier ou balayage sur téléphone).
 - **Quiz** : 216 questions de cours (QCM, vrai/faux, associations, remise en ordre, réponses écrites et énumérations corrigées par mots-clés). Filtre « déjà tombé au contrôle 2025 », révision intelligente des points faibles.
+- **À revoir** : toute question ratée (quiz, exercices des cas pratiques, examens) est ajoutée automatiquement à la liste « À revoir » (badge sur Quiz, bandeau sur l'accueil). Une bonne réponse la retire de la liste.
 - **Cas pratiques** : 12 cas expliqués étape par étape, avec lecture guidée à voix haute, puis exercices « comme au devoir » (dont un générateur de séries statistiques).
 - **Examens** : le contrôle d'octobre 2025, deux sujets blancs et un examen éclair, chronométrés et notés sur 20.
 - Fonctionne hors ligne une fois ouvert (installable sur téléphone), progression enregistrée dans le navigateur.

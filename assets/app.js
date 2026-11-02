@@ -32,6 +32,25 @@
   }
   const mastered = (id) => (S.q[id] && S.q[id].box >= 2);
   const weak = (id) => (S.q[id] && S.q[id].n > 0 && S.q[id].box === 0);
+  // Une même tentative peut être re-notée (auto-correction, grille cochée) : on annule l'enregistrement précédent avant de réenregistrer.
+  function recorder(id) {
+    let first = true, snap = null;
+    return (ok) => {
+      if (!id) return;
+      if (first) { snap = S.q[id] ? Object.assign({}, S.q[id]) : null; first = false; }
+      else if (snap) S.q[id] = Object.assign({}, snap); else delete S.q[id];
+      record(id, ok); updateBadge();
+    };
+  }
+  // Toutes les questions jouables (banque, exercices des cas pratiques, sujets d'examen) avec un identifiant stable.
+  D.cas.forEach((k) => k.exercise.forEach((q, i) => { if (!q.id) q.id = `cas-${k.id}-${i + 1}`; if (!q.ch) q.ch = k.ch; }));
+  D.examens.forEach((e) => (e.parts || []).forEach((p, pi) => p.qs.forEach((q, qi) => { if (!q.id) q.id = `exam-${e.id}-${pi + 1}-${qi + 1}`; })));
+  const ALLQ = (() => { const seen = new Set(); const out = []; [D.questions, ...D.cas.map((k) => k.exercise), ...D.examens.map((e) => (e.parts || []).flatMap((p) => p.qs))].forEach((arr) => arr.forEach((q) => { if (!seen.has(q.id)) { seen.add(q.id); out.push(q); } })); return out; })();
+  const toReview = () => ALLQ.filter((q) => weak(q.id));
+  function updateBadge() {
+    const n = toReview().length;
+    $$('.nav a[data-k="quiz"], .tabbar a[data-k="quiz"]').forEach((a) => { let b = $(".badge", a); if (!n) { if (b) b.remove(); return; } if (!b) { b = document.createElement("span"); b.className = "badge"; a.appendChild(b); } b.textContent = n; b.title = n + " à revoir"; });
+  }
 
   /* ─────────── Thème ─────────── */
   function applyTheme() { if (S.theme) document.documentElement.setAttribute("data-theme", S.theme); else document.documentElement.removeAttribute("data-theme"); $$(".theme-label").forEach((e) => (e.textContent = S.theme === "dark" ? "Thème sombre" : S.theme === "light" ? "Thème clair" : "Thème auto")); }
@@ -241,7 +260,7 @@
         }));
       }
       $$("[data-ov]", fbox).forEach((b) => b.addEventListener("click", () => {
-        res.ok = b.dataset.ov === "1"; res.score = res.ok ? 1 : 0; res.overridden = true; drawFb();
+        res.ok = b.dataset.ov === "1"; res.score = res.ok ? 1 : 0; res.overridden = true; drawFb(); if (opts.onScore) opts.onScore(res);
       }));
     }
 
@@ -328,7 +347,7 @@
   /* ─────────── Accueil ─────────── */
   function viewHome() {
     const all = chapStats(); const f = dailyFiche();
-    const weakN = D.questions.filter((q) => weak(q.id)).length;
+    const weakN = toReview().length;
     const c25 = D.questions.filter((q) => q.src === "C25").length;
     render(`
       <section class="hero">
@@ -346,6 +365,7 @@
           <a class="btn sm ghost" href="#fiches" style="align-self:flex-start">Toutes les fiches</a>
         </aside>
       </section>
+      ${weakN ? `<section class="review-banner"><div><span class="eyebrow">À revoir</span><b>${weakN} question${weakN > 1 ? "s" : ""} ratée${weakN > 1 ? "s" : ""}</b><span>Chaque question ratée (quiz, cas pratiques, examens) arrive ici. Réussis-la une fois et elle sort de la liste.</span></div><button type="button" class="btn" data-go="review">Réviser maintenant</button></section>` : ""}
       <section class="actions-grid">
         <button type="button" class="action primary" data-go="smart"><span class="k">${weakN ? weakN + " à revoir" : "15 questions"}</span><b>Révision intelligente</b><span>Tes points faibles d'abord, puis les questions jamais vues.</span></button>
         <button type="button" class="action" data-go="c25"><span class="k">${c25} questions</span><b>Déjà tombé au contrôle</b><span>Les notions du contrôle d'octobre 2025, en QCM et à l'écrit.</span></button>
@@ -365,7 +385,7 @@
         <a class="btn sm ghost" href="#cas-parcours" style="align-self:flex-start">Voir le cas pratique</a>
       </section>`);
     $$("[data-go]", view()).forEach((b) => b.addEventListener("click", () => {
-      quizCfg = Object.assign(defaultCfg(), b.dataset.go === "smart" ? { mode: "smart", n: 15 } : { mode: "c25", n: 0 });
+      quizCfg = Object.assign(defaultCfg(), b.dataset.go === "smart" ? { mode: "smart", n: 15 } : b.dataset.go === "review" ? { mode: "review", n: 0 } : { mode: "c25", n: 0 });
       startQuiz(); location.hash = "quiz";
     }));
   }
@@ -405,9 +425,10 @@
     }
     if (!fState.deck) fState.deck = shuffle(list);
     const deck = fState.deck; const i = Math.min(fState.i, deck.length - 1); const f = deck[i];
-    const known = deck.filter((x) => S.fiche[x.id]).length;
+    if (!S.fiche[f.id]) { S.fiche[f.id] = true; markDay(); save(); }
+    const last = i === deck.length - 1;
     out.innerHTML = `<div class="flash-wrap">
-      <div class="row" style="justify-content:space-between"><span class="small mono">Carte ${i + 1} / ${deck.length}</span><span class="small">${known} marquée${known > 1 ? "s" : ""} « je savais »</span></div>
+      <div class="row" style="justify-content:space-between"><span class="small">Carte <b>${i + 1}</b> sur ${deck.length}</span><span class="small">Touche la carte pour la retourner</span></div>
       <div class="bar okc"><i style="width:${pct(i + 1, deck.length)}%"></i></div>
       <div class="flash ${fState.flipped ? "flipped" : ""}" tabindex="0" role="button" aria-label="Retourner la carte">
         <div class="flash-inner">
@@ -416,20 +437,29 @@
         </div>
       </div>
       <div class="flash-nav">
-        <button type="button" class="btn quiet" data-f="prev" ${i === 0 ? "disabled" : ""}>← Précédente</button>
-        <div class="row"><button type="button" class="btn bad" data-f="no">À revoir</button><button type="button" class="btn ok" data-f="yes">Je savais</button></div>
+        <button type="button" class="btn quiet" data-f="prev" ${i === 0 ? "disabled" : ""} aria-label="Carte précédente"><span aria-hidden="true">←</span> Précédente</button>
+        ${last ? `<button type="button" class="btn" data-f="again">Mélanger et recommencer ↻</button>` : `<button type="button" class="btn" data-f="next" aria-label="Carte suivante">Suivante <span aria-hidden="true">→</span></button>`}
       </div></div>`;
     const card = $(".flash", out);
     const flip = () => { fState.flipped = !fState.flipped; card.classList.toggle("flipped", fState.flipped); };
     card.addEventListener("click", flip);
     card.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } });
-    $$("[data-f]", out).forEach((b) => b.addEventListener("click", () => {
-      const a = b.dataset.f;
-      if (a === "prev") fState.i = Math.max(0, i - 1);
-      else { S.fiche[f.id] = a === "yes"; markDay(); save(); if (a === "no") { deck.push(f); } fState.i = i + 1; if (fState.i >= deck.length) { fState.i = 0; fState.deck = null; } }
+    const move = (a) => {
+      if (a === "prev") { if (i === 0) return; fState.i = i - 1; }
+      else if (a === "next") { if (last) return; fState.i = i + 1; }
+      else { fState.i = 0; fState.deck = null; }
       fState.flipped = false; drawFiches();
-    }));
+    };
+    $$("[data-f]", out).forEach((b) => b.addEventListener("click", () => move(b.dataset.f)));
+    // Flèches du clavier et balayage sur téléphone
+    flashKeys = (e) => { if (!document.body.contains(card) || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return; if (e.key === "ArrowLeft") move("prev"); else if (e.key === "ArrowRight") move("next"); };
+    let x0 = null;
+    card.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+    card.addEventListener("touchend", (e) => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 60) { e.preventDefault(); move(dx < 0 ? "next" : "prev"); } });
   }
+
+  let flashKeys = null;
+  document.addEventListener("keydown", (e) => { if (flashKeys) flashKeys(e); });
 
   /* ─────────── Quiz ─────────── */
   const defaultCfg = () => ({ chs: D.chapters.map((c) => c.id), kind: "mix", n: 20, mode: "all" });
@@ -437,6 +467,7 @@
   let session = null;
   const KINDS = { mix: null, choice: ["qcm", "multi", "vf", "match", "order"], write: ["open", "list"] };
   function pickQuestions(cfg) {
+    if (cfg.mode === "review") { const r = shuffle(toReview()); return cfg.n ? r.slice(0, cfg.n) : r; }
     let qs = D.questions.filter((q) => cfg.chs.includes(q.ch) && (!KINDS[cfg.kind] || KINDS[cfg.kind].includes(q.t)));
     if (cfg.mode === "c25") qs = qs.filter((q) => q.src === "C25");
     if (cfg.mode === "td") qs = qs.filter((q) => q.src === "TD" || q.src === "EX");
@@ -458,7 +489,7 @@
       <section class="panel setup-grid">
         <div class="setup-block"><span class="lab">Chapitres</span><div class="chips">${D.chapters.map((c) => `<button type="button" class="chip" data-chq="${c.id}" aria-pressed="${quizCfg.chs.includes(c.id)}">${c.code} · ${esc(c.short)}</button>`).join("")}</div></div>
         <div class="setup-block"><span class="lab">Type de questions</span><div class="chips">${[["mix", "Mélange"], ["choice", "QCM et associations"], ["write", "Réponses écrites"]].map(([k, l]) => `<button type="button" class="chip" data-kind="${k}" aria-pressed="${quizCfg.kind === k}">${l}</button>`).join("")}</div></div>
-        <div class="setup-block"><span class="lab">Sélection</span><div class="chips">${[["all", "Toutes"], ["smart", "Révision intelligente"], ["c25", "★ Tombé au contrôle"], ["td", "TD et exercices"], ["weak", "Pas encore maîtrisées"]].map(([k, l]) => `<button type="button" class="chip" data-mode="${k}" aria-pressed="${quizCfg.mode === k}">${l}</button>`).join("")}</div></div>
+        <div class="setup-block"><span class="lab">Sélection</span><div class="chips">${[["all", "Toutes"], ["review", `À revoir (${toReview().length})`], ["smart", "Révision intelligente"], ["c25", "★ Tombé au contrôle"], ["td", "TD et exercices"], ["weak", "Pas encore maîtrisées"]].map(([k, l]) => `<button type="button" class="chip" data-mode="${k}" aria-pressed="${quizCfg.mode === k}">${l}</button>`).join("")}</div></div>
         <div class="setup-block"><span class="lab">Nombre de questions</span><div class="chips">${[[10, "10"], [20, "20"], [40, "40"], [0, "Toutes"]].map(([k, l]) => `<button type="button" class="chip" data-n="${k}" aria-pressed="${quizCfg.n === k}">${l}</button>`).join("")}</div></div>
         <div class="row"><button type="button" class="btn" id="go-quiz">Commencer</button><span class="small" id="avail"></span></div>
       </section>`);
@@ -471,9 +502,12 @@
   function drawSession() {
     const s = session; const q = s.list[s.i];
     render(`<div class="session-head"><button type="button" class="btn sm quiet" id="quit">✕ Quitter</button><div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length} · ✔ ${s.res.filter((r) => r.ok).length}</span></div><div id="qslot"></div>`);
+    const rec = recorder(q.id);
     const card = QCard(q, {
       mode: "practice", num: s.i + 1, total: s.list.length,
-      next: (res) => { record(q.id, res.ok); s.res.push({ id: q.id, ok: res.ok }); s.i++; viewQuiz(); },
+      onChecked: (res) => { if (q.t !== "write") rec(res.ok); },
+      onScore: (res) => rec(res.ok),
+      next: (res) => { rec(res.ok); s.res.push({ id: q.id, ok: res.ok }); s.i++; viewQuiz(); },
       nextLabel: s.i + 1 < s.list.length ? "Question suivante →" : "Voir mon résultat →"
     });
     $("#qslot").appendChild(card.el);
@@ -482,11 +516,11 @@
   }
   function drawSessionEnd() {
     const s = session; const ok = s.res.filter((r) => r.ok).length; const n = s.res.length;
-    const missed = s.res.filter((r) => !r.ok).map((r) => D.questions.find((q) => q.id === r.id));
+    const missed = s.res.filter((r) => !r.ok).map((r) => ALLQ.find((q) => q.id === r.id)).filter(Boolean);
     render(`
       <section class="panel result-hero"><span class="eyebrow">Résultat</span><div class="big-score">${ok}<small> / ${n}</small></div><p>${n ? (ok / n >= 0.8 ? "Très solide. Passe à un examen chronométré." : ok / n >= 0.5 ? "Bonne base. Refais les questions manquées tout de suite pour les fixer." : "Relis les fiches du chapitre, puis relance les questions manquées.") : ""}</p>
         <div class="row" style="justify-content:center">${missed.length ? `<button type="button" class="btn" id="redo">Refaire les ${missed.length} manquée${missed.length > 1 ? "s" : ""}</button>` : ""}<button type="button" class="btn quiet" id="again">Nouveau quiz</button></div></section>
-      ${missed.length ? `<section class="panel stack"><h2 class="section-title">À retravailler</h2><div class="review-list">${missed.map((q) => `<div><span class="ico no">✗</span><span><b>${esc(q.q)}</b><br><span class="small">${chap(q.ch).code} · ${TYPE[q.t]}</span></span></div>`).join("")}</div></section>` : ""}`);
+      ${missed.length ? `<section class="panel stack"><h2 class="section-title">À retravailler</h2><p class="small">Ces questions ont été ajoutées automatiquement à ta liste « À revoir ».</p><div class="review-list">${missed.map((q) => `<div><span class="ico no">✗</span><span><b>${esc(q.q)}</b><br><span class="small">${chap(q.ch).code} · ${TYPE[q.t]}</span></span></div>`).join("")}</div></section>` : ""}`);
     const r = $("#redo"); if (r) r.addEventListener("click", () => { session = { list: shuffle(missed), i: 0, res: [] }; viewQuiz(); });
     $("#again").addEventListener("click", () => { session = null; viewQuiz(); });
   }
@@ -533,7 +567,8 @@
     if (k.special === "stats") ex.appendChild(StatsTrainer());
     let done = 0;
     k.exercise.forEach((q, i) => {
-      const card = QCard(q, { mode: "practice", num: i + 1, total: k.exercise.length, onChecked: () => { done++; if (done >= Math.ceil(k.exercise.length / 2)) { S.cas[k.id] = true; markDay(); save(); } } });
+      const rec = recorder(q.id);
+      const card = QCard(q, { mode: "practice", num: i + 1, total: k.exercise.length, onScore: (res) => rec(res.ok), onChecked: (res) => { if (q.t !== "write") rec(res.ok); done++; if (done >= Math.ceil(k.exercise.length / 2)) { S.cas[k.id] = true; markDay(); save(); } } });
       ex.appendChild(card.el);
     });
   }
@@ -670,8 +705,8 @@
       hdr.innerHTML = `<span class="eyebrow">Copie corrigée</span><div class="big-score">${fmt(note, 1)}<small> / 20</small></div><p class="small mono">${fmt(pts)} points sur ${fmt(total)}</p>${hasSelf ? `<p>Les rédactions sont notées par toi : coche la grille sous chaque corrigé, ta note se met à jour.</p>` : ""}<div class="row" style="justify-content:center"><a class="btn" href="#examens">Autres sujets</a><button type="button" class="btn quiet" id="retry">Refaire ce sujet</button></div>`;
       $("#retry").addEventListener("click", () => { examS = null; viewExam(x.id); });
     };
-    results.forEach((o) => { if (o.k.q.id) record(o.k.q.id, o.r.ok); });
-    x.cards.forEach((k) => { k.c.el.addEventListener("change", () => setTimeout(upd, 0)); });
+    results.forEach((o) => { o.rec = recorder(o.k.q.id); o.rec(o.r.ok); });
+    results.forEach((o) => { o.k.c.el.addEventListener("change", () => setTimeout(() => { if (o.k.q.t === "write") o.rec(o.r.ok); upd(); }, 0)); });
     upd();
     $("#endzone").innerHTML = "";
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -679,7 +714,7 @@
 
   /* ─────────── Progrès ─────────── */
   function viewProgress() {
-    const all = chapStats(); const weakN = D.questions.filter((q) => weak(q.id)).length;
+    const all = chapStats(); const weakN = toReview().length;
     const fk = Object.values(S.fiche).filter(Boolean).length;
     render(`
       <header class="page-head"><span class="eyebrow">Suivi</span><h1>Progrès</h1><p>Tes résultats restent sur cet appareil, dans ce navigateur.</p></header>
@@ -687,7 +722,7 @@
         <div class="tile"><b>${all.m}<span class="small"> / ${all.tot}</span></b><span>questions maîtrisées</span></div>
         <div class="tile"><b>${all.seen}</b><span>questions déjà vues</span></div>
         <div class="tile"><b>${weakN}</b><span>à revoir (dernière réponse fausse)</span></div>
-        <div class="tile"><b>${fk}</b><span>fiches « je savais »</span></div>
+        <div class="tile"><b>${fk}</b><span>fiches consultées</span></div>
         <div class="tile"><b>${Object.keys(S.cas).length}<span class="small"> / ${D.cas.length}</span></b><span>cas pratiques faits</span></div>
         <div class="tile"><b>${S.days.length}</b><span>jours de révision</span></div>
       </div>
@@ -695,7 +730,7 @@
         ${weakN ? `<button type="button" class="btn" id="weak" style="align-self:flex-start">Réviser les ${weakN} questions ratées</button>` : ""}</section>
       <section class="panel stack"><h2 class="section-title">Historique des examens</h2>${S.exams.length ? `<div class="grid-scroll"><table class="hist"><thead><tr><th>Date</th><th>Sujet</th><th style="text-align:right">Note</th></tr></thead><tbody>${S.exams.slice().reverse().map((x) => { const e = D.examens.find((y) => y.id === x.id); return `<tr><td class="mono">${x.date}</td><td>${esc(e ? e.title : x.id)}</td><td class="n">${fmt(x.note, 1)} / 20</td></tr>`; }).join("")}</tbody></table></div>` : `<p class="small">Aucun examen passé pour l'instant.</p>`}</section>
       <section class="panel stack"><h2 class="section-title">Remettre à zéro</h2><p class="small">Efface toute ta progression sur cet appareil.</p><div id="reset-zone"><button type="button" class="btn bad" id="reset">Effacer ma progression</button></div></section>`);
-    const w = $("#weak"); if (w) w.addEventListener("click", () => { quizCfg = Object.assign(defaultCfg(), { mode: "smart", n: weakN }); session = { list: D.questions.filter((q) => weak(q.id)), i: 0, res: [] }; session.list = shuffle(session.list); location.hash = "quiz"; });
+    const w = $("#weak"); if (w) w.addEventListener("click", () => { quizCfg = Object.assign(defaultCfg(), { mode: "smart", n: weakN }); session = { list: toReview(), i: 0, res: [] }; session.list = shuffle(session.list); location.hash = "quiz"; });
     $("#reset").addEventListener("click", () => {
       $("#reset-zone").innerHTML = `<div class="confirm"><span>Tout effacer ? Cette action est définitive.</span><button type="button" class="btn bad" id="reset-yes">Oui, effacer</button><button type="button" class="btn quiet" id="reset-no">Annuler</button></div>`;
       $("#reset-yes").addEventListener("click", () => { const th = S.theme; S = defaults(); S.theme = th; save(); viewProgress(); });
@@ -706,7 +741,8 @@
   /* ─────────── Routeur ─────────── */
   function route() {
     const h = (location.hash || "").replace(/^#/, "");
-    setNav(h);
+    flashKeys = null;
+    setNav(h); updateBadge();
     if (!h || h === "accueil") return viewHome();
     if (h === "fiches") return viewFiches();
     if (h === "quiz") return viewQuiz();
