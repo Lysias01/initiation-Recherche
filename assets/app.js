@@ -10,6 +10,7 @@
   const fmt = (n, d = 2) => { const r = Math.round(n * 10 ** d) / 10 ** d; return String(r).replace(".", ","); };
   const TYPE = { qcm: "QCM", multi: "Plusieurs réponses", vf: "Vrai ou faux", open: "Réponse écrite", list: "Énumération", match: "Associer", order: "Remettre en ordre", num: "Calcul", write: "Rédaction", grid: "Tableau à compléter" };
   const SRC = { C25: "★ Contrôle 2025", TD: "TD", EX: "Exercice du cours" };
+  const chTag = (id) => `<span class="tag ch ch-${id}">${chap(id).code}</span>`;
   const srcTag = (s) => (s ? `<span class="tag ${s === "C25" ? "c25" : s === "TD" ? "td" : ""}">${SRC[s] || s}</span>` : "");
   const view = () => $("#view");
   let uid = 0;
@@ -47,6 +48,11 @@
   D.examens.forEach((e) => (e.parts || []).forEach((p, pi) => p.qs.forEach((q, qi) => { if (!q.id) q.id = `exam-${e.id}-${pi + 1}-${qi + 1}`; })));
   const ALLQ = (() => { const seen = new Set(); const out = []; [D.questions, ...D.cas.map((k) => k.exercise), ...D.examens.map((e) => (e.parts || []).flatMap((p) => p.qs))].forEach((arr) => arr.forEach((q) => { if (!seen.has(q.id)) { seen.add(q.id); out.push(q); } })); return out; })();
   const toReview = () => ALLQ.filter((q) => weak(q.id));
+  function updateSide() {
+    const box = $("#side-prog"); if (!box) return;
+    const all = chapStats(); const p = pct(all.m, all.tot);
+    box.innerHTML = `<div class="row" style="justify-content:space-between"><span>Maîtrise globale</span><b>${p} %</b></div><div class="bar"><i style="width:${p}%"></i></div><span class="small">${all.m} / ${all.tot} questions</span>`;
+  }
   function updateBadge() {
     const n = toReview().length;
     $$('.nav a[data-k="quiz"], .tabbar a[data-k="quiz"]').forEach((a) => { let b = $(".badge", a); if (!n) { if (b) b.remove(); return; } if (!b) { b = document.createElement("span"); b.className = "badge"; a.appendChild(b); } b.textContent = n; b.title = n + " à revoir"; });
@@ -100,7 +106,7 @@
     const st = { sel: null, multi: new Set(), order: [], res: null, checked: false };
     const meta = [];
     if (opts.num) meta.push(`<span class="num">${opts.total ? `Q${opts.num}/${opts.total}` : `Q${opts.num}`}</span>`);
-    if (q.ch) meta.push(`<span class="tag">${chap(q.ch).code}</span>`);
+    if (q.ch) meta.push(chTag(q.ch));
     meta.push(`<span class="tag">${TYPE[q.t] || q.t}</span>`);
     if (q.src) meta.push(srcTag(q.src));
     if (opts.pts != null) meta.push(`<span class="pts">${fmt(opts.pts)} pt${opts.pts > 1 ? "s" : ""}</span>`);
@@ -115,12 +121,12 @@
     /* --- construction du corps --- */
     if (q.t === "qcm" || q.t === "vf") {
       data.choices = q.t === "vf" ? [{ text: "Vrai", v: true }, { text: "Faux", v: false }] : shuffle(q.c.map((text, i) => ({ text, v: i })));
-      body.innerHTML = `<div class="choices ${q.t === "vf" ? "vf" : ""}">${data.choices.map((c, i) => `<button type="button" class="choice" data-i="${i}">${q.t === "vf" ? "" : `<span class="letter">${letters[i]}</span>`}<span>${esc(c.text)}</span></button>`).join("")}</div>`;
+      body.innerHTML = `<div class="choices ${q.t === "vf" ? "vf" : ""}" role="radiogroup">${data.choices.map((c, i) => `<button type="button" class="choice" data-i="${i}" role="radio" aria-checked="false">${q.t === "vf" ? "" : `<span class="letter">${letters[i]}</span>`}<span>${esc(c.text)}</span></button>`).join("")}</div>`;
       $$(".choice", body).forEach((b) => b.addEventListener("click", () => {
         if (st.checked) return;
         st.sel = +b.dataset.i;
-        $$(".choice", body).forEach((x) => x.classList.toggle("sel", x === b));
-        if (!exam) check();
+        $$(".choice", body).forEach((x) => { x.classList.toggle("sel", x === b); x.setAttribute("aria-checked", x === b); });
+        refreshCheck();
       }));
     } else if (q.t === "multi") {
       data.choices = shuffle(q.c.map((text, i) => ({ text, v: i })));
@@ -129,6 +135,7 @@
         if (st.checked) return; const i = +b.dataset.i;
         if (st.multi.has(i)) st.multi.delete(i); else st.multi.add(i);
         b.classList.toggle("sel", st.multi.has(i)); b.setAttribute("aria-pressed", st.multi.has(i));
+        refreshCheck();
       }));
     } else if (q.t === "open" || q.t === "list" || q.t === "write") {
       const id = nid("ta");
@@ -211,7 +218,7 @@
       if (res.self && res.selfDone == null) return { cls: "part", txt: "Auto-correction : coche ce que ta réponse contient" };
       if (res.ok) return { cls: "good", txt: "Juste" };
       if (res.score > 0) return { cls: "part", txt: "Partiellement juste" };
-      return { cls: "miss", txt: res.answered === false ? "Sans réponse" : "À revoir" };
+      return { cls: "miss", txt: res.answered === false ? "Sans réponse" : "Mauvaise réponse" };
     }
     function showFeedback(res) {
       st.res = res;
@@ -278,13 +285,21 @@
     function flashHint() {
       fbox.innerHTML = `<p class="hint-line" style="color:var(--bad)">Réponds d'abord : choisis, écris ou range au moins un élément.</p>`;
     }
+    const choiceType = q.t === "qcm" || q.t === "vf" || q.t === "multi";
+    // Valider reste grisé tant qu'aucune réponse n'est choisie.
+    function refreshCheck() {
+      const b = $("[data-a=check]", act); if (!b || !choiceType) return;
+      b.disabled = q.t === "multi" ? !st.multi.size : st.sel == null;
+      if (!b.disabled) fbox.innerHTML = "";
+    }
     function drawActions() {
       if (exam) { act.innerHTML = ""; return; }
       if (!st.checked) {
-        const needBtn = !(q.t === "qcm" || q.t === "vf");
-        act.innerHTML = needBtn ? `<button type="button" class="btn" data-a="check">${q.t === "write" ? "Voir le corrigé" : "Valider"}</button>${q.t === "order" ? `<button type="button" class="btn quiet" data-a="reset">Recommencer</button>` : ""}` : `<span class="hint-line">Touche une réponse.</span>`;
+        const keys = opts.keys && choiceType ? `<span class="kbd-hint">${q.t === "vf" ? "<kbd>V</kbd> / <kbd>F</kbd>" : `<kbd>A</kbd>–<kbd>${letters[data.choices.length - 1]}</kbd>`} pour choisir · <kbd>Entrée</kbd> pour valider</span>` : "";
+        act.innerHTML = `<button type="button" class="btn lg" data-a="check">${q.t === "write" ? "Voir le corrigé" : "Valider"}</button>${q.t === "order" ? `<button type="button" class="btn quiet" data-a="reset">Recommencer</button>` : ""}${keys}`;
+        refreshCheck();
       } else {
-        act.innerHTML = opts.next ? `<span class="spacer"></span><button type="button" class="btn" data-a="next">${opts.nextLabel || "Question suivante →"}</button>` : "";
+        act.innerHTML = opts.next ? `<span class="spacer"></span><button type="button" class="btn lg" data-a="next">${opts.nextLabel || "Question suivante →"}</button>` : "";
       }
       $$("[data-a]", act).forEach((b) => b.addEventListener("click", () => {
         const a = b.dataset.a;
@@ -297,13 +312,27 @@
     if (data.ta && !exam) data.ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) check(); });
     if (data.inp && !exam) data.inp.addEventListener("keydown", (e) => { if (e.key === "Enter") check(); });
 
-    return {
-      el,
+    const api = {
+      el, vf: q.t === "vf",
+      // Raccourcis clavier (quiz) : choisir une réponse, puis Entrée pour valider / continuer.
+      pick(i) { const b = $$(".choice", body)[i]; if (!b || b.disabled || st.checked) return false; b.click(); return true; },
+      primary() { const b = $("[data-a=check], [data-a=next]", act); if (!b || b.disabled) return false; b.click(); return true; },
       grade, check,
       examCorrect() { const r = grade(); st.checked = true; lock(); showFeedback(r); return r; },
       get result() { return st.res; }
     };
+    if (opts.keys) activeQ = api;
+    return api;
   }
+  let activeQ = null;
+  document.addEventListener("keydown", (e) => {
+    if (!activeQ || !document.body.contains(activeQ.el) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (/INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName)) return;
+    if (e.key === "Enter") { if (activeQ.primary()) e.preventDefault(); return; }
+    const k = e.key.toLowerCase();
+    const i = activeQ.vf ? ({ v: 0, f: 1, 1: 0, 2: 1 })[k] : (/^[a-h]$/.test(k) ? k.charCodeAt(0) - 97 : /^[1-8]$/.test(k) ? +k - 1 : undefined);
+    if (i != null && activeQ.pick(i)) e.preventDefault();
+  });
 
   /* ─────────── Icônes ─────────── */
   const IC = {
@@ -312,6 +341,7 @@
     quiz: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8M12 17h.01"/></svg>',
     cas: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><path d="M7.5 15h9"/></svg>',
     exam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M10 2h4"/></svg>',
+    star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>',
     prog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
     moon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
     speaker: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
@@ -543,18 +573,53 @@
   function dailyFiche() { const withMemo = D.fiches.filter((f) => f.memo); const d = new Date(); const k = d.getFullYear() * 400 + d.getMonth() * 31 + d.getDate(); return withMemo[k % withMemo.length]; }
 
   /* ─────────── Accueil ─────────── */
+  const greeting = () => { const h = new Date().getHours(); return h < 5 || h >= 18 ? "Bonsoir" : "Bonjour"; };
   function viewHome() {
     const all = chapStats(); const f = dailyFiche();
-    const weakN = toReview().length;
+    const weakN = toReview().length; const p = pct(all.m, all.tot);
     const c25 = D.questions.filter((q) => q.src === "C25").length;
+    const days = S.days.length;
     render(`
-      <section class="hero">
-        <div class="hero-text">
+      <section class="welcome">
+        <div class="welcome-main">
           <span class="eyebrow">Initiation à la recherche · Master Informatique</span>
-          <h1>Révise la méthodo, <mark>une question à la fois</mark>.</h1>
-          <p>Des définitions courtes, ${D.questions.length} questions de cours en QCM ou à l'écrit, des cas pratiques expliqués pas à pas et des sujets chronométrés comme le jour du devoir.</p>
-          <div class="counts"><span><b>${D.fiches.length}</b> fiches</span><span><b>${D.questions.length}</b> questions</span><span><b>${D.cas.length}</b> cas pratiques</span><span><b>${D.examens.length}</b> sujets</span></div>
+          <h1>${greeting()} 👋 On révise ?</h1>
+          <p>${all.seen ? `Tu maîtrises <b>${all.m}</b> questions sur ${all.tot}. ${weakN ? `${weakN} attendent d'être revue${weakN > 1 ? "s" : ""}.` : "Continue sur ta lancée."}` : "Commence par une révision de 15 questions : tes résultats construiront ensuite ton programme."}</p>
+          <div class="row">
+            <button type="button" class="btn lg light" data-go="smart">Commencer une révision</button>
+            <a class="btn lg outline-light" href="#examen-eclair">Examen éclair · 20 min</a>
+          </div>
         </div>
+        <div class="welcome-stats">
+          <div class="ring" style="--p:${p}" role="img" aria-label="${p} % des questions maîtrisées"><div><b>${p}%</b><span>maîtrisé</span></div></div>
+          <ul class="mini-stats">
+            <li><b>${days}</b> jour${days > 1 ? "s" : ""} de révision</li>
+            <li><b>${all.seen}</b> question${all.seen > 1 ? "s" : ""} vue${all.seen > 1 ? "s" : ""}</li>
+            <li><b>${weakN}</b> à revoir</li>
+          </ul>
+        </div>
+      </section>
+      ${weakN ? `<section class="review-banner"><div><span class="eyebrow">À revoir</span><b>${weakN} question${weakN > 1 ? "s" : ""} ratée${weakN > 1 ? "s" : ""}</b><span>Chaque question ratée (quiz, cas pratiques, examens) arrive ici. Réussis-la une fois et elle sort de la liste.</span></div><button type="button" class="btn" data-go="review">Réviser maintenant</button></section>` : ""}
+      <section class="shortcuts">
+        <a class="shortcut" href="#fiches"><span class="sc-ic">${IC.fiches}</span><b>Fiches mémo</b><span>${D.fiches.length} définitions</span></a>
+        <button type="button" class="shortcut" data-go="c25"><span class="sc-ic hl">${IC.star}</span><b>Tombé au contrôle</b><span>${c25} questions</span></button>
+        <a class="shortcut" href="#cas"><span class="sc-ic">${IC.cas}</span><b>Cas pratiques</b><span>${D.cas.length} pas à pas</span></a>
+        <a class="shortcut" href="#examens"><span class="sc-ic">${IC.exam}</span><b>Examens</b><span>${D.examens.length} sujets chronométrés</span></a>
+      </section>
+      <section class="stack">
+        <div class="row" style="justify-content:space-between"><h2 class="section-title">Par chapitre</h2><a href="#progres" class="small">Voir ma progression</a></div>
+        <div class="chap-cards">
+          ${D.chapters.map((c) => { const st = chapStats(c.id); const nf = D.fiches.filter((x) => x.ch === c.id).length; return `<article class="chap-card ch-${c.id}">
+            <span class="tag ch ch-${c.id}">${c.code}</span>
+            <h3>${esc(c.title)}</h3>
+            <div class="bar"><i style="width:${pct(st.m, st.tot)}%"></i></div>
+            <p class="small">${st.m} / ${st.tot} questions maîtrisées · ${nf} fiches</p>
+            <div class="row"><button type="button" class="btn sm" data-go-ch="${c.id}">Quiz du chapitre</button><button type="button" class="btn sm quiet" data-fiches-ch="${c.id}">Fiches</button></div>
+          </article>`; }).join("")}
+        </div>
+        <p class="small">Une question est « maîtrisée » quand tu l'as réussie deux fois de suite.</p>
+      </section>
+      <section class="home-duo">
         <aside class="daily" aria-label="Mémo du jour">
           <div class="row" style="justify-content:space-between"><span class="eyebrow">Mémo du jour · ${chap(f.ch).code}</span><button type="button" class="listen-ic" id="daily-listen" data-listen="daily" data-label="Écouter le mémo du jour" aria-label="Écouter le mémo du jour"><span class="ico">${IC.speaker}</span></button></div>
           <h3>${esc(f.term)}</h3>
@@ -562,31 +627,19 @@
           <p class="memo">${esc(f.memo)}</p>
           <a class="btn sm ghost" href="#fiches" style="align-self:flex-start">Toutes les fiches</a>
         </aside>
-      </section>
-      ${weakN ? `<section class="review-banner"><div><span class="eyebrow">À revoir</span><b>${weakN} question${weakN > 1 ? "s" : ""} ratée${weakN > 1 ? "s" : ""}</b><span>Chaque question ratée (quiz, cas pratiques, examens) arrive ici. Réussis-la une fois et elle sort de la liste.</span></div><button type="button" class="btn" data-go="review">Réviser maintenant</button></section>` : ""}
-      <section class="actions-grid">
-        <button type="button" class="action primary" data-go="smart"><span class="k">${weakN ? weakN + " à revoir" : "15 questions"}</span><b>Révision intelligente</b><span>Tes points faibles d'abord, puis les questions jamais vues.</span></button>
-        <button type="button" class="action" data-go="c25"><span class="k">${c25} questions</span><b>Déjà tombé au contrôle</b><span>Les notions du contrôle d'octobre 2025, en QCM et à l'écrit.</span></button>
-        <a class="action" href="#examen-eclair"><span class="k">20 minutes</span><b>Examen éclair</b><span>15 questions au hasard, chronométrées, notées sur 20.</span></a>
-      </section>
-      <section class="panel stack">
-        <div class="row" style="justify-content:space-between"><h2 class="section-title">Ta maîtrise par chapitre</h2><a href="#progres" class="small">Détails</a></div>
-        <div class="chap-rows">
-          ${D.chapters.map((c) => { const s = chapStats(c.id); return `<div class="chap-row"><span class="code">${c.code}</span><span class="t">${esc(c.title)}<span class="bar"><i style="width:${pct(s.m, s.tot)}%"></i></span></span><span class="pct">${s.m}/${s.tot}</span></div>`; }).join("")}
-        </div>
-        <p class="small">Une question est « maîtrisée » quand tu l'as réussie deux fois de suite.${all.seen ? "" : " Commence par un quiz pour voir ta progression."}</p>
-      </section>
-      <section class="panel stack">
-        <h2 class="section-title">La démarche en un coup d'œil</h2>
-        <div class="flow"><span>Observation</span><span>Problème</span><span>Question</span><span>Hypothèse</span><span>Objectif</span><span>Méthode</span><span>Résultats</span><span>Discussion</span></div>
-        <p class="small">Le cheminement du chapitre 3. Le cas pratique « Le parcours complet » le déroule sur l'exercice 9 du TD.</p>
-        <a class="btn sm ghost" href="#cas-parcours" style="align-self:flex-start">Voir le cas pratique</a>
+        <section class="panel stack">
+          <h2 class="section-title">La démarche en un coup d'œil</h2>
+          <ol class="flow"><li>Observation</li><li>Problème</li><li>Question</li><li>Hypothèse</li><li>Objectif</li><li>Méthode</li><li>Résultats</li><li>Discussion</li></ol>
+          <a class="btn sm ghost" href="#cas-parcours" style="align-self:flex-start">Voir le cas pratique</a>
+        </section>
       </section>`);
     $("#daily-listen").addEventListener("click", () => toggleListen("daily", () => Reader.play(blocks($(".daily")), { owner: "daily" })));
     $$("[data-go]", view()).forEach((b) => b.addEventListener("click", () => {
       quizCfg = Object.assign(defaultCfg(), b.dataset.go === "smart" ? { mode: "smart", n: 15 } : b.dataset.go === "review" ? { mode: "review", n: 0 } : { mode: "c25", n: 0 });
       startQuiz(); location.hash = "quiz";
     }));
+    $$("[data-go-ch]", view()).forEach((b) => b.addEventListener("click", () => { quizCfg = Object.assign(defaultCfg(), { chs: [b.dataset.goCh], mode: "smart", n: 15 }); startQuiz(); location.hash = "quiz"; }));
+    $$("[data-fiches-ch]", view()).forEach((b) => b.addEventListener("click", () => { fState.ch = b.dataset.fichesCh; fState.i = 0; fState.deck = null; location.hash = "fiches"; }));
   }
 
   /* ─────────── Fiches ─────────── */
@@ -637,7 +690,7 @@
     const out = $("#fiche-out"); const list = filteredFiches();
     if (!list.length) { out.innerHTML = `<div class="panel empty">Aucune fiche ne correspond. Essaie un autre mot.</div>`; return; }
     if (fState.mode === "list") {
-      out.innerHTML = `<div class="fiche-list">${list.map((f) => `<div class="fiche"><span class="no">${chap(f.ch).code}</span><h3>${esc(f.term)} ${srcTag(f.src)}</h3><p class="def">${esc(f.def)}</p>${ficheBody(f)}</div>`).join("")}</div>`;
+      out.innerHTML = `<div class="fiche-list">${list.map((f) => `<div class="fiche"><span class="no ch-${f.ch}">${chap(f.ch).code}</span><h3>${esc(f.term)} ${srcTag(f.src)}</h3><p class="def">${esc(f.def)}</p>${ficheBody(f)}</div>`).join("")}</div>`;
       return;
     }
     if (!fState.deck) fState.deck = shuffle(list);
@@ -649,7 +702,7 @@
       <div class="bar okc"><i style="width:${pct(i + 1, deck.length)}%"></i></div>
       <div class="flash ${fState.flipped ? "flipped" : ""}" tabindex="0" role="button" aria-label="Retourner la carte">
         <div class="flash-inner">
-          <div class="flash-face front"><span class="tag">${chap(f.ch).code}</span><h2>${esc(f.term)}</h2>${f.src ? srcTag(f.src) : ""}<span class="flash-hint">Récite la définition, puis touche la carte</span></div>
+          <div class="flash-face front">${chTag(f.ch)}<h2>${esc(f.term)}</h2>${f.src ? srcTag(f.src) : ""}<span class="flash-hint">Récite la définition, puis touche la carte</span></div>
           <div class="flash-face back"><h3>${esc(f.term)}</h3><p>${esc(f.def)}</p>${ficheBody(f)}</div>
         </div>
       </div>
@@ -719,10 +772,14 @@
   }
   function drawSession() {
     const s = session; const q = s.list[s.i];
-    render(`<div class="session-head"><button type="button" class="btn sm quiet" id="quit">✕ Quitter</button><button type="button" class="btn sm ${S.autoRead ? "" : "quiet"}" id="auto" aria-pressed="${!!S.autoRead}" title="Lire chaque question et sa correction à voix haute">${IC.speaker}<span>Auto</span></button>${speedCtl()}<div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length} · ✔ ${s.res.filter((r) => r.ok).length}</span></div><div id="qslot"></div>`);
+    const good = s.res.filter((r) => r.ok).length;
+    render(`<div class="session-head">
+        <div class="sh-top"><button type="button" class="btn sm quiet" id="quit" aria-label="Quitter le quiz">✕<span class="hide-sm"> Quitter</span></button><div class="bar"><i style="width:${pct(s.i, s.list.length)}%"></i></div><span class="count">${s.i + 1} / ${s.list.length}</span></div>
+        <div class="sh-tools"><span class="score-pill">✔ ${good} juste${good > 1 ? "s" : ""}</span><span class="spacer"></span><button type="button" class="btn sm ${S.autoRead ? "" : "quiet"}" id="auto" aria-pressed="${!!S.autoRead}" title="Lire chaque question et sa correction à voix haute">${IC.speaker}<span>Lecture auto</span></button>${speedCtl()}</div>
+      </div><div id="qslot"></div>`);
     const rec = recorder(q.id);
     const card = QCard(q, {
-      mode: "practice", num: s.i + 1, total: s.list.length,
+      mode: "practice", num: s.i + 1, total: s.list.length, keys: true,
       onChecked: (res) => { if (q.t !== "write") rec(res.ok); if (S.autoRead) Reader.play(blocks($(".qfb", card.el)), { owner: "quiz" }); },
       onScore: (res) => rec(res.ok),
       next: (res) => { rec(res.ok); s.res.push({ id: q.id, ok: res.ok }); s.i++; viewQuiz(); },
@@ -737,13 +794,25 @@
     });
     if (S.autoRead) Reader.play(blocks(card.el), { owner: "quiz" });
   }
+  // Bonne réponse en clair, pour la liste des questions ratées.
+  function answerText(q) {
+    if (q.t === "qcm") return q.c[q.a];
+    if (q.t === "vf") return q.a ? "Vrai" : "Faux";
+    if (q.t === "multi") return q.a.map((i) => q.c[i]).join(" · ");
+    if (q.t === "num") return fmt(q.a, 4) + (q.unit ? " " + q.unit : "");
+    if (q.t === "open") return q.a;
+    if (q.t === "list") return q.items.map((it) => it.t).join(" · ");
+    if (q.t === "order") return q.items.join(" → ");
+    if (q.t === "match") return q.pairs.map((p) => p[0] + " : " + p[1]).join(" · ");
+    return "";
+  }
   function drawSessionEnd() {
     const s = session; const ok = s.res.filter((r) => r.ok).length; const n = s.res.length;
     const missed = s.res.filter((r) => !r.ok).map((r) => ALLQ.find((q) => q.id === r.id)).filter(Boolean);
     render(`
-      <section class="panel result-hero"><span class="eyebrow">Résultat</span><div class="big-score">${ok}<small> / ${n}</small></div><p>${n ? (ok / n >= 0.8 ? "Très solide. Passe à un examen chronométré." : ok / n >= 0.5 ? "Bonne base. Refais les questions manquées tout de suite pour les fixer." : "Relis les fiches du chapitre, puis relance les questions manquées.") : ""}</p>
+      <section class="panel result-hero"><span class="eyebrow">Résultat</span><div class="ring big" style="--p:${pct(ok, n)}"><div><b>${ok}<small>/${n}</small></b><span>${pct(ok, n)} %</span></div></div><p>${n ? (ok / n >= 0.8 ? "Très solide. Passe à un examen chronométré." : ok / n >= 0.5 ? "Bonne base. Refais les questions manquées tout de suite pour les fixer." : "Relis les fiches du chapitre, puis relance les questions manquées.") : ""}</p>
         <div class="row" style="justify-content:center">${missed.length ? `<button type="button" class="btn" id="redo">Refaire les ${missed.length} manquée${missed.length > 1 ? "s" : ""}</button>` : ""}<button type="button" class="btn quiet" id="again">Nouveau quiz</button></div></section>
-      ${missed.length ? `<section class="panel stack"><h2 class="section-title">À retravailler</h2><p class="small">Ces questions ont été ajoutées automatiquement à ta liste « À revoir ».</p><div class="review-list">${missed.map((q) => `<div><span class="ico no">✗</span><span><b>${esc(q.q)}</b><br><span class="small">${chap(q.ch).code} · ${TYPE[q.t]}</span></span></div>`).join("")}</div></section>` : ""}`);
+      ${missed.length ? `<section class="panel stack"><h2 class="section-title">À retravailler</h2><p class="small">Ces questions ont été ajoutées automatiquement à ta liste « À revoir ».</p><div class="review-list">${missed.map((q) => { const a = answerText(q); return `<div><span class="ico no">✗</span><div class="rv"><b>${esc(q.q)}</b>${a ? `<p class="rv-ans"><span>Bonne réponse</span> ${esc(a)}</p>` : ""}${q.exp ? `<p class="small">💡 ${esc(q.exp)}</p>` : ""}<span class="small">${chap(q.ch).code} · ${TYPE[q.t]}</span></div></div>`; }).join("")}</div></section>` : ""}`);
     const r = $("#redo"); if (r) r.addEventListener("click", () => { session = { list: shuffle(missed), i: 0, res: [] }; viewQuiz(); });
     $("#again").addEventListener("click", () => { session = null; viewQuiz(); });
   }
@@ -973,7 +1042,7 @@
   function route() {
     const h = (location.hash || "").replace(/^#/, "");
     flashKeys = null;
-    setNav(h); updateBadge();
+    setNav(h); updateBadge(); updateSide();
     if (!h || h === "accueil") return viewHome();
     if (h === "fiches") return viewFiches();
     if (h === "quiz") return viewQuiz();
